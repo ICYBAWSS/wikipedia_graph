@@ -964,6 +964,52 @@ else if (typeof exports === 'object'){
             opacity: 1;
             transform: translateX(-50%) translateY(0);
         }
+
+        /* Mobile Responsiveness */
+        @media (max-width: 768px) {
+            #header-panel {
+                width: calc(100% - 40px);
+                max-width: none;
+                padding: 16px;
+            }
+            #header-panel h1 { font-size: 20px; }
+            #header-panel .subtitle { display: none; }
+            
+            #controls-panel, #legend-panel, #stats-panel {
+                width: calc(100% - 40px);
+                max-width: none;
+                left: 20px !important;
+                right: 20px !important;
+            }
+
+            #controls-panel { top: auto; bottom: 80px; }
+            #legend-panel { bottom: 80px; }
+            #stats-panel { bottom: 80px; }
+
+            /* Detail Sidebar full screen on mobile */
+            #detail-sidebar {
+                width: 100%;
+                top: 0; right: 0; bottom: 0;
+                border-radius: 0;
+                transform: translateX(100%);
+            }
+            #detail-sidebar.active { transform: translateX(0); }
+
+            /* Adjust Toggles for Mobile */
+            .toggle-btn {
+                width: 48px;
+                height: 48px;
+            }
+
+            #header-toggle.active { left: auto; right: 20px; top: 80px; border-radius: 24px; border-left: 1px solid rgba(255, 255, 255, 0.1); }
+            #stats-toggle.active { left: auto; right: 20px; bottom: 80px; border-radius: 24px; border-left: 1px solid rgba(255, 255, 255, 0.1); }
+            #controls-toggle.active { right: 20px; top: 80px; border-radius: 24px; border-right: 1px solid rgba(255, 255, 255, 0.1); }
+            #legend-toggle.active { right: 20px; bottom: 80px; border-radius: 24px; border-right: 1px solid rgba(255, 255, 255, 0.1); }
+
+            /* Route Finder stack on mobile */
+            #route-finder-section > div { flex-direction: column; }
+            #route-finder-section input { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -1658,7 +1704,20 @@ else if (typeof exports === 'object'){
             toggleBtn.classList.add("active");
             toggleBtn.addEventListener("click", () => {
                 const isCollapsed = panel.classList.toggle("collapsed");
-                if (isCollapsed) toggleBtn.classList.remove("active"); else toggleBtn.classList.add("active");
+                if (isCollapsed) {
+                    toggleBtn.classList.remove("active");
+                } else {
+                    // On mobile, close other panels when one is opened
+                    if (window.innerWidth <= 768) {
+                        document.querySelectorAll('.panel:not(#' + panelId + ')').forEach(p => {
+                            if (p.id !== 'detail-sidebar') p.classList.add('collapsed');
+                        });
+                        document.querySelectorAll('.toggle-btn:not(#' + toggleId + ')').forEach(b => {
+                            b.classList.remove('active');
+                        });
+                    }
+                    toggleBtn.classList.add("active");
+                }
             });
         }
         setupCollapsiblePanel("header-panel", "header-toggle");
@@ -1830,10 +1889,14 @@ else if (typeof exports === 'object'){
             }
             document.getElementById("sidebar-wiki-link").href = `https://en.wikipedia.org/wiki/${encodeURIComponent(d.id.replace(/ /g, '_'))}`;
             sidebar.classList.add("active");
-            document.getElementById("controls-panel").style.transform = "translateX(-450px)";
-            document.getElementById("legend-panel").style.transform = "translateX(-450px)";
-            document.getElementById("controls-toggle").style.transform = "translateX(-450px)";
-            document.getElementById("legend-toggle").style.transform = "translateX(-450px)";
+            
+            // Adjust overlays for layout shift (Desktop only)
+            if (window.innerWidth > 768) {
+                document.getElementById("controls-panel").style.transform = "translateX(-450px)";
+                document.getElementById("legend-panel").style.transform = "translateX(-450px)";
+                document.getElementById("controls-toggle").style.transform = "translateX(-450px)";
+                document.getElementById("legend-toggle").style.transform = "translateX(-450px)";
+            }
         }
 
         function deselectNode() {
@@ -1844,10 +1907,12 @@ else if (typeof exports === 'object'){
             executeQuery();
 
             sidebar.classList.remove("active");
-            document.getElementById("controls-panel").style.transform = "translateX(0)";
-            document.getElementById("legend-panel").style.transform = "translateX(0)";
-            document.getElementById("controls-toggle").style.transform = "translateX(0)";
-            document.getElementById("legend-toggle").style.transform = "translateX(0)";
+            if (window.innerWidth > 768) {
+                document.getElementById("controls-panel").style.transform = "translateX(0)";
+                document.getElementById("legend-panel").style.transform = "translateX(0)";
+                document.getElementById("controls-toggle").style.transform = "translateX(0)";
+                document.getElementById("legend-toggle").style.transform = "translateX(0)";
+            }
         }
 
         d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
