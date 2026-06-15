@@ -1235,7 +1235,27 @@
 
             const links = [];
             if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
-                // Use a Rank-based query to keep only the top N links per node in the current view
+                // Query path links separately if they exist to ensure they are ALWAYS drawn
+                if (activePathLinks.size > 0) {
+                    const pathLinkSql = `
+                        SELECT l.source, l.target FROM links l
+                        JOIN nodes n1 ON l.source = n1.id
+                        JOIN nodes n2 ON l.target = n2.id
+                        WHERE (n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax)
+                           OR (n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax)
+                    `;
+                    const pathStmt = db.prepare(pathLinkSql);
+                    pathStmt.bind({ ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding });
+                    while (pathStmt.step()) {
+                        const row = pathStmt.getAsObject();
+                        if (activePathLinks.has(`${row.source}->${row.target}`) || activePathLinks.has(`${row.target}->${row.source}`)) {
+                            links.push({ source: row.source, target: row.target });
+                        }
+                    }
+                    pathStmt.free();
+                }
+
+                // Use a Rank-based query to keep only the top N regular links per node
                 const linkSql = `
                     WITH RankedLinks AS (
                         SELECT l.source, l.target,
@@ -1258,7 +1278,12 @@
                 });
                 while (linkStmt.step()) {
                     const row = linkStmt.getAsObject();
-                    links.push({ source: row.source, target: row.target });
+                    // Avoid duplicates if a path link was already added
+                    const key1 = `${row.source}->${row.target}`;
+                    const key2 = `${row.target}->${row.source}`;
+                    if (!activePathLinks.has(key1) && !activePathLinks.has(key2)) {
+                        links.push({ source: row.source, target: row.target });
+                    }
                 }
                 linkStmt.free();
             }
