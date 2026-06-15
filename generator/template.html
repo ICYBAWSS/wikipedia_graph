@@ -912,6 +912,10 @@
             <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none;">
                 Find Shortest Path
             </button>
+            <div id="route-result-container" style="margin-top: 4px; display: none;">
+                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
+                <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
+            </div>
         </div>
 
         <datalist id="article-list"></datalist>
@@ -1669,6 +1673,29 @@
                     activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
                 }
                 
+                // POPULATE TEXTUAL PATH
+                const container = document.getElementById("route-result-container");
+                const pathText = document.getElementById("route-text-path");
+                pathText.innerHTML = "";
+                foundPath.forEach((title, idx) => {
+                    const step = document.createElement("div");
+                    step.style.cursor = "pointer";
+                    step.style.display = "flex";
+                    step.style.gap = "8px";
+                    step.innerHTML = `<span style="color:var(--color-bone); opacity:0.6">${idx + 1}.</span> <span>${title}</span>`;
+                    step.addEventListener("click", () => {
+                        const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                        nodeQuery.bind({ ":id": title });
+                        if (nodeQuery.step()) {
+                            const nodeRow = nodeQuery.getAsObject();
+                            selectNode(nodeRow);
+                        }
+                        nodeQuery.free();
+                    });
+                    pathText.appendChild(step);
+                });
+                container.style.display = "block";
+                
                 // Zoom to the start of the path
                 const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
                 startNodeStmt.bind({":id": startId});
@@ -1770,6 +1797,11 @@
             selectedNode = null;
             activePath = new Set();
             activePathLinks = new Set();
+            
+            // Clear textual path
+            document.getElementById("route-result-container").style.display = "none";
+            document.getElementById("route-text-path").innerHTML = "";
+
             executeQuery();
 
             sidebar.classList.remove("active");
