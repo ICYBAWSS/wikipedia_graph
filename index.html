@@ -1282,6 +1282,7 @@ else if (typeof exports === 'object'){
         let db = null;
         let graphData = { nodes: [], links: [] }; // currently loaded viewport data
         let adjacencyList = new Map(); // In-memory map for fast pathfinding
+        let positionCache = new Map(); // Store stabilized coordinates
         let selectedNode = null;
         let hoveredNode = null;
         let isInteracting = false;
@@ -1388,6 +1389,9 @@ else if (typeof exports === 'object'){
             .force("gravity", gravityForce);
 
         simulation.on("tick", () => {
+            simulation.nodes().forEach(n => {
+                positionCache.set(n.id, { x: n.x, y: n.y });
+            });
             requestDraw();
         });
 
@@ -1611,17 +1615,29 @@ else if (typeof exports === 'object'){
         }
 
         function updateSimulation(visibleNodes, visibleLinks) {
-            const nodeMap = new Map(simulation.nodes().map(n => [n.id, n]));
             visibleNodes.forEach(n => {
-                const existing = nodeMap.get(n.id);
-                if (existing) {
-                    n.x = existing.x; n.y = existing.y;
-                    n.vx = existing.vx; n.vy = existing.vy;
+                const cached = positionCache.get(n.id);
+                if (cached) {
+                    n.x = cached.x;
+                    n.y = cached.y;
+                    // If we've panned away and back, keep them "fixed" to prevent jumpy reloads
+                    if (highPerfMode) {
+                        n.fx = cached.x;
+                        n.fy = cached.y;
+                    }
                 }
             });
+
             simulation.nodes(visibleNodes);
             simulation.force("link").links(visibleLinks);
-            if (!isInteracting) simulation.alpha(0.05).restart();
+
+            if (!isInteracting) {
+                // If High Perf is on and we have cached positions, don't restart simulation
+                const allCached = visibleNodes.every(n => positionCache.has(n.id));
+                if (!(highPerfMode && allCached)) {
+                    simulation.alpha(0.05).restart();
+                }
+            }
         }
 
         function draw() {
