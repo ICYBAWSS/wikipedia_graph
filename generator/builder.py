@@ -5,7 +5,7 @@ import gzip
 TEMPLATE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "template.html"))
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results", "wiki_graph.db"))
 LIBS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "libs"))
-OUTPUT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results", "index.html"))
+OUTPUT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "index.html"))
 
 def build_visualization():
     """Compiles the SQLite database and base64-encoded WASM libraries into a self-contained HTML file."""

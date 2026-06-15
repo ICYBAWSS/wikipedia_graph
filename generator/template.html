@@ -794,6 +794,18 @@
             <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web...">
         </div>
 
+        <!-- Route Finder Section -->
+        <div id="route-finder-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
+            <div class="eyebrow" style="margin-bottom: 4px;">Route Finder</div>
+            <div style="display: flex; gap: 8px;">
+                <input type="text" class="search-input" id="route-start" placeholder="Start Article" style="padding: 8px 12px; font-size: 12px;">
+                <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px;">
+            </div>
+            <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none;">
+                Find Shortest Path
+            </button>
+        </div>
+
         <!-- Advanced Filters Section -->
         <div id="filter-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
             <!-- Category Filter -->
@@ -1259,6 +1271,22 @@
                     const sourceNode = typeof l.source === "object" ? l.source : nodeMap.get(l.source);
                     const targetNode = typeof l.target === "object" ? l.target : nodeMap.get(l.target);
                     if (!sourceNode || !targetNode) return;
+
+                    const isPathLink = activePathLinks.has(`${sourceNode.id}->${targetNode.id}`) || 
+                                       activePathLinks.has(`${targetNode.id}->${sourceNode.id}`);
+
+                    if (isPathLink) {
+                        ctx.save();
+                        ctx.strokeStyle = "#ffffff";
+                        ctx.lineWidth = 3 / transform.k;
+                        ctx.beginPath();
+                        ctx.moveTo(sourceNode.x, sourceNode.y);
+                        ctx.lineTo(targetNode.x, targetNode.y);
+                        ctx.stroke();
+                        ctx.restore();
+                        return; // don't draw in main batch
+                    }
+
                     if (focusNode && sourceNode.id !== focusNode.id && targetNode.id !== focusNode.id) return;
                     ctx.moveTo(sourceNode.x, sourceNode.y);
                     ctx.lineTo(targetNode.x, targetNode.y);
@@ -1280,19 +1308,21 @@
                 ctx.arc(d.x, d.y, r, 0, 2 * Math.PI);
                 const isHovered = hoveredNode === d;
                 const isSelected = selectedNode === d;
+                const isPathNode = activePath.has(d.id);
                 
-                if (isHovered || isSelected) {
+                if (isHovered || isSelected || isPathNode) {
                     const gradient = ctx.createLinearGradient(d.x - r, d.y - r, d.x + r, d.y + r);
-                    gradient.addColorStop(0, '#d35849'); gradient.addColorStop(1, '#588fa8');
+                    gradient.addColorStop(0, isPathNode ? '#ffffff' : '#d35849'); 
+                    gradient.addColorStop(1, isPathNode ? '#f6f5f2' : '#588fa8');
                     ctx.fillStyle = gradient; ctx.globalAlpha = 1.0;
                 } else {
                     ctx.fillStyle = categoryColors[d.category] || "#ffffff";
-                    ctx.globalAlpha = focusNode ? (focusNeighbors.has(d.id) ? 1.0 : 0.08) : nodeOpacityScale(d.inDegree);
+                    ctx.globalAlpha = (focusNode || activePath.size > 0) ? (focusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.08) : nodeOpacityScale(d.inDegree);
                 }
                 ctx.fill();
 
-                if (isHovered || isSelected) {
-                    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2.5 / transform.k; ctx.stroke();
+                if (isHovered || isSelected || isPathNode) {
+                    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = (isPathNode ? 4 : 2.5) / transform.k; ctx.stroke();
                 } else if (d.inDegree > maxInDegree * 0.15) {
                     ctx.strokeStyle = categoryColors[d.category]; ctx.lineWidth = 1.2 / transform.k; ctx.stroke();
                 } else if (transform.k > 0.5) {
@@ -1383,15 +1413,89 @@
         function applyFilters() {
             filterViewsVal.textContent = formatViewsCount(+filterViews.value);
             filterRefVal.textContent = filterRef.value;
-            deselectNode(); executeQuery();
+            deselectNode(); 
+            
+            const query = searchBox.value.toLowerCase().trim();
+            executeQuery(true); // execute immediately
+
+            // AUTO-ZOOM TO FIRST MATCH
+            if (query.length > 2 && graphData.nodes.length > 0) {
+                // Look for an exact match or first prefix match
+                const match = graphData.nodes.find(n => n.id.toLowerCase() === query) || graphData.nodes[0];
+                if (match) {
+                    selectNode(match, false); // select without additional redraw
+                }
+            }
         }
 
-        searchBox.addEventListener("input", applyFilters);
-        filterCategory.addEventListener("change", applyFilters);
-        filterViews.addEventListener("input", applyFilters);
-        filterRef.addEventListener("input", applyFilters);
+        // --- BFS ROUTE FINDER LOGIC ---
+        const routeStart = document.getElementById("route-start");
+        const routeEnd = document.getElementById("route-end");
+        const routeBtn = document.getElementById("find-route-btn");
+        let activePath = new Set(); // IDs of nodes in the path
+        let activePathLinks = new Set(); // Source-Target strings in path
 
-        function selectNode(d) {
+        async function findRoute() {
+            const startId = routeStart.value.trim();
+            const endId = routeEnd.value.trim();
+            if (!startId || !endId) return;
+
+            // BFS Implementation
+            const queue = [[startId]];
+            const visited = new Set([startId]);
+            let foundPath = null;
+
+            while (queue.length > 0) {
+                const path = queue.shift();
+                const node = path[path.length - 1];
+
+                if (node === endId) {
+                    foundPath = path;
+                    break;
+                }
+
+                // Query database for links from this node
+                const stmt = db.prepare("SELECT target FROM links WHERE source = :id");
+                stmt.bind({ ":id": node });
+                while (stmt.step()) {
+                    const target = stmt.getAsObject().target;
+                    if (!visited.has(target)) {
+                        visited.add(target);
+                        queue.push([...path, target]);
+                    }
+                }
+                stmt.free();
+                
+                // Safety break for extremely large graphs
+                if (visited.size > 5000) break;
+            }
+
+            if (foundPath) {
+                activePath = new Set(foundPath);
+                activePathLinks = new Set();
+                for (let i = 0; i < foundPath.length - 1; i++) {
+                    activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
+                }
+                
+                // Zoom to the start of the path
+                const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                startNodeStmt.bind({":id": startId});
+                if (startNodeStmt.step()) {
+                    const d = startNodeStmt.getAsObject();
+                    selectNode(d);
+                }
+                startNodeStmt.free();
+                
+                requestDraw();
+                console.log("Path found:", foundPath);
+            } else {
+                alert("No path found between these articles in the current dataset.");
+            }
+        }
+
+        routeBtn.addEventListener("click", findRoute);
+
+        function selectNode(d, triggerQuery = true) {
             selectedNode = d;
             const neighbors = new Set([d.id]);
             const connectionListItems = [];
@@ -1420,7 +1524,7 @@
                 }
             }
             stmt.free();
-            executeQuery();
+            if (triggerQuery) executeQuery();
             const scale = Math.max(transform.k, 0.4);
             const x = width / 2 - d.x * scale, y = height / 2 - d.y * scale;
             d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
