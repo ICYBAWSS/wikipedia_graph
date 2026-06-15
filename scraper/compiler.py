@@ -17,6 +17,13 @@ CAT_BLACKLIST_PREFIXES = (
 
 # Categorization rules based on keywords found in categories
 TOPICS = {
+    "Biography & People": [
+        "births", "deaths", "people", "family", "royalty", "monarch", "king", "queen", "dynasty",
+        "biography", "founder", "politician", "peerage", "personalities", "activists", "alumni",
+        "educator", "leader", "pioneer", "celebrity", "autobiography", "memoir", "singer", "actor",
+        "actress", "musician", "director", "producer", "writer", "author", "philosopher", "theologian",
+        "saint", "monk", "president", "prime minister", "governor", "statesman", "philanthropist"
+    ],
     "Science & Technology": [
         "science", "physics", "chemistry", "biology", "mathematics", "computer", "programming",
         "software", "technology", "space", "medicine", "engineering", "logic", "network", 
@@ -26,33 +33,27 @@ TOPICS = {
     ],
     "History & Society": [
         "history", "election", "war", "military", "politics", "empire", "government", "sociology",
-        "economy", "society", "battle", "law", "dynasty", "calendar", "treaty", "civilization",
-        "revolution", "conflict", "monarchy", "president", "parliament", "treaties", "ancient",
+        "economy", "society", "battle", "law", "calendar", "treaty", "civilization",
+        "revolution", "conflict", "monarchy", "parliament", "treaties", "ancient",
         "medieval", "renaissance", "industrial", "colonial", "democrac", "republic", "party",
         "union", "labor", "rights", "social", "diploma", "policy"
     ],
     "Art & Culture": [
         "art", "music", "film", "television", "entertainment", "sport", "game", "literature",
-        "writer", "paint", "theater", "show", "media", "album", "singer", "actor", "drama",
+        "paint", "theater", "show", "media", "album", "drama",
         "culture", "dance", "museum", "fiction", "novel", "poetry", "comedy", "video game",
         "architecture", "sculpture", "design", "fashion", "cuisine", "food", "cook", "creative",
-        "performing", "visual", "classic", "contemporary", "musician", "director", "producer"
+        "performing", "visual", "classic", "contemporary"
     ],
     "Philosophy & Religion": [
         "philosophy", "religion", "myth", "theology", "god", "belief", "deity", "buddhism",
         "christianity", "islam", "hinduism", "judaism", "ethic", "ritual", "spiritual", "church",
-        "temple", "bible", "quran", "sacred", "philosopher", "theologian", "monk", "saint",
-        "faith", "worship", "existence", "metaphysics", "epistemology"
+        "temple", "bible", "quran", "sacred", "faith", "worship", "existence", "metaphysics", "epistemology"
     ],
     "Geography & Places": [
         "country", "city", "geography", "island", "mountain", "river", "ocean", "sea", "continent",
         "state", "region", "province", "border", "lake", "settlement", "capital", "valley", "coast",
         "town", "village", "landmark", "park", "territory", "district", "county", "location"
-    ],
-    "Biography & People": [
-        "births", "deaths", "people", "family", "royalty", "monarch", "king", "queen", "dynasty",
-        "biography", "founder", "politician", "peerage", "personalities", "activists", "alumni",
-        "educator", "leader", "pioneer", "celebrity", "autobiography", "memoir"
     ]
 }
 
@@ -71,18 +72,27 @@ def clean_categories(raw_categories_json):
         return []
 
 def classify_topic(title, cleaned_categories):
-    """
-    Classifies an article into a top-level topic based on categories
-    and title keywords.
-    """
-    scores = {topic: 0 for topic in TOPICS}
-    text_to_scan = " ".join(cleaned_categories) + " " + title.lower()
+    """Assigns a topic based on keywords in title and categories with priority logic."""
+    combined_text = (title + " " + " ".join(cleaned_categories)).lower()
     
+    # Priority 1: People / Biography
+    # We look for high-signal person keywords
+    bio_keywords = TOPICS["Biography & People"]
+    if any(k in combined_text for k in bio_keywords):
+        # Exclude organizations/websites that might mention people
+        if not any(k in combined_text for k in ["website", "company", "corporation", "organization", "service"]):
+            return "Biography & People"
+
+    # Priority 2: Technical/Adult websites to Other
+    if any(k in combined_text for k in ["website", "pornography", "pornstars", "streaming service", "social network", "dot-com"]):
+        return "Other & General"
+
+    scores = {topic: 0 for topic in TOPICS}
     for topic, keywords in TOPICS.items():
         for keyword in keywords:
-            # Check for word match to avoid substring false positives (e.g. 'art' inside 'earth')
-            if keyword in text_to_scan:
-                scores[topic] += text_to_scan.count(keyword)
+            if keyword in combined_text:
+                # Weight title matches higher than category matches
+                scores[topic] += (combined_text.count(keyword) + (5 if keyword in title.lower() else 0))
                 
     # Find the topic with the highest score
     best_topic = "Other & General"
