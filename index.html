@@ -1283,6 +1283,8 @@ else if (typeof exports === 'object'){
         let graphData = { nodes: [], links: [] }; // currently loaded viewport data
         let adjacencyList = new Map(); // In-memory map for fast pathfinding
         let positionCache = new Map(); // Store stabilized coordinates
+        let linkCache = []; // Store ALL links for instant "skeleton" view
+        let nodeMetadata = new Map(); // Cache views/categories for all nodes
         let selectedNode = null;
         let hoveredNode = null;
         let isInteracting = false;
@@ -1487,15 +1489,32 @@ else if (typeof exports === 'object'){
             }
             allNodesStmt.free();
 
-            // Populate in-memory adjacency list for pathfinder
+            // Populate in-memory structures for fast pathfinding & visual continuity
             adjacencyList = new Map();
+            linkCache = [];
+            nodeMetadata = new Map();
+
+            // Cache node metadata (views, categories)
+            const metaQueryStmt = db.prepare("SELECT id, views, category FROM nodes");
+            while (metaQueryStmt.step()) {
+                const row = metaQueryStmt.getAsObject();
+                nodeMetadata.set(row.id, { views: row.views, category: row.category });
+            }
+            metaQueryStmt.free();
+
+            // Cache all links
             const allLinksStmt = db.prepare("SELECT source, target FROM links");
             while (allLinksStmt.step()) {
                 const { source, target } = allLinksStmt.getAsObject();
+                
+                // For BFS Pathfinder
                 if (!adjacencyList.has(source)) adjacencyList.set(source, []);
                 if (!adjacencyList.has(target)) adjacencyList.set(target, []);
                 adjacencyList.get(source).push(target);
-                adjacencyList.get(target).push(source); // Undirected for easier discovery
+                adjacencyList.get(target).push(source);
+
+                // For Instant "Skeleton" Link drawing
+                linkCache.push({ s: source, t: target });
             }
             allLinksStmt.free();
 
@@ -1664,42 +1683,59 @@ else if (typeof exports === 'object'){
                 });
             }
 
-            if (!(highPerfMode && isInteracting)) {
-                ctx.beginPath();
-                graphData.links.forEach(l => {
-                    const sourceNode = typeof l.source === "object" ? l.source : nodeMap.get(l.source);
-                    const targetNode = typeof l.target === "object" ? l.target : nodeMap.get(l.target);
-                    if (!sourceNode || !targetNode) return;
+            // 1. Draw Links
+            ctx.beginPath();
+            
+            // LOGIC: Use linkCache for instant feedback during interaction, else use viewport links
+            const currentLinks = (highPerfMode && isInteracting) ? linkCache : graphData.links;
 
-                    const isPathLink = activePathLinks.has(`${sourceNode.id}->${targetNode.id}`) || 
-                                       activePathLinks.has(`${targetNode.id}->${sourceNode.id}`);
+            currentLinks.forEach(l => {
+                const sId = typeof l.source === "object" ? l.source.id : (l.s || l.source);
+                const tId = typeof l.target === "object" ? l.target.id : (l.t || l.target);
 
-                    if (isPathLink) {
-                        ctx.save();
-                        ctx.strokeStyle = "#ffffff";
-                        ctx.lineWidth = 4 / transform.k;
-                        ctx.beginPath();
-                        ctx.moveTo(sourceNode.x, sourceNode.y);
-                        ctx.lineTo(targetNode.x, targetNode.y);
-                        ctx.stroke();
-                        ctx.restore();
-                        return; // don't draw in main batch
-                    }
+                const sourceNode = nodeMap.get(sId) || positionCache.get(sId);
+                const targetNode = nodeMap.get(tId) || positionCache.get(tId);
+                if (!sourceNode || !targetNode) return;
 
-                    // HIDE ALL OTHER LINKS if a path is active to isolate the route
-                    if (activePath.size > 0) return;
+                const isPathLink = activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`);
 
-                    if (focusNode && sourceNode.id !== focusNode.id && targetNode.id !== focusNode.id) return;
-                    ctx.moveTo(sourceNode.x, sourceNode.y);
-                    ctx.lineTo(targetNode.x, targetNode.y);
-                });
-                if (focusNode) {
-                    ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5 / transform.k;
-                } else {
-                    ctx.strokeStyle = "rgba(214, 210, 202, 0.08)"; ctx.lineWidth = 0.6 / transform.k;
+                if (isPathLink) {
+                    ctx.save(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4 / transform.k;
+                    ctx.beginPath(); ctx.moveTo(sourceNode.x, sourceNode.y); ctx.lineTo(targetNode.x, targetNode.y);
+                    ctx.stroke(); ctx.restore();
+                    return;
                 }
-                ctx.stroke();
+
+                // If a path is active, hide everything else
+                if (activePath.size > 0) return;
+
+                // PERFORMANCE: During interaction, only draw "skeleton" (links between high-view nodes)
+                if (highPerfMode && isInteracting) {
+                    const sMeta = nodeMetadata.get(sId);
+                    const tMeta = nodeMetadata.get(tId);
+                    if (!sMeta || !tMeta || (sMeta.views < 500000 && tMeta.views < 500000)) return;
+                }
+
+                if (focusNode && sId !== focusNode.id && tId !== focusNode.id) return;
+                
+                // Viewport culling for speed
+                if (sourceNode.x < xMin || sourceNode.x > xMax || sourceNode.y < yMin || sourceNode.y > yMax) {
+                    if (targetNode.x < xMin || targetNode.x > xMax || targetNode.y < yMin || targetNode.y > yMax) return;
+                }
+
+                ctx.moveTo(sourceNode.x, sourceNode.y);
+                ctx.lineTo(targetNode.x, targetNode.y);
+            });
+
+            if (focusNode) {
+                ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5 / transform.k;
+            } else {
+                const opacity = (highPerfMode && isInteracting) ? 0.02 : 0.08;
+                ctx.strokeStyle = `rgba(214, 210, 202, ${opacity})`; 
+                ctx.lineWidth = 0.6 / transform.k;
             }
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
 
             graphData.nodes.forEach(d => {
                 const r = nodeRadiusScale(d.views);
