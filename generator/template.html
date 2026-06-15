@@ -1364,6 +1364,20 @@
             });
         }
 
+        function updateHighPerfSettings() {
+            const highPerfToggle = document.getElementById("high-perf-toggle");
+            if (!highPerfToggle) return;
+            highPerfMode = highPerfToggle.checked;
+            if (highPerfMode) {
+                simulation.force("collision", null);
+                simulation.alphaDecay(0.08);
+            } else {
+                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16));
+                simulation.alphaDecay(0.0228);
+            }
+            executeQuery();
+        }
+
         function bootstrapVisualizer() {
             try {
                 const s1 = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
@@ -1513,12 +1527,9 @@
         setupCollapsiblePanel("legend-panel", "legend-toggle");
 
         const highPerfToggle = document.getElementById("high-perf-toggle");
-        highPerfToggle.onchange = () => {
-            highPerfMode = highPerfToggle.checked;
-            if (highPerfMode) { simulation.force("collision", null); simulation.alphaDecay(0.08); }
-            else { simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16)); simulation.alphaDecay(0.0228); }
-            executeQuery();
-        };
+        if (highPerfToggle) {
+            highPerfToggle.addEventListener("change", updateHighPerfSettings);
+        }
 
         initDatabase();
         resizeCanvas();
