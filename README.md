@@ -1,5 +1,6 @@
-### currenly only 1000 articles are in, doing heavy optimization work before scraping and adding all 7,195,600.
-## My computer did all the hard scraping and proccesign for You! Just use the github pages link https://icybawss.github.io/wikipedia_graph/ no need to do anything below unless you would like to remake it or edit.
+> currenly only 1000 articles are in, doing heavy optimization work before scraping and adding all 7,195,600.
+
+## My computer did all the hard scraping and proccesing for you! Just use the github pages link https://icybawss.github.io/wikipedia_graph/ no need to do anything below unless you would like to remake it or edit stuff.
 
 # 1. Project Documentation (README.md)
 ## Wikipedia Graph Visualization Pipeline
