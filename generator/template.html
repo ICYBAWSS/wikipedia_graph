@@ -682,6 +682,16 @@
             margin-bottom: 20px;
         }
 
+        .mini-loader {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top: 2px solid var(--color-lilac-haze);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         .panel {
@@ -900,6 +910,7 @@
                 <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
             </svg>
             <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web..." list="article-list">
+            <div class="mini-loader" id="search-loader" style="position: absolute; right: 14px; top: 15px;"></div>
         </div>
 
         <!-- Route Finder Section -->
@@ -909,8 +920,9 @@
                 <input type="text" class="search-input" id="route-start" placeholder="Start Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
                 <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
             </div>
-            <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none;">
-                Find Shortest Path
+            <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                <span>Find Shortest Path</span>
+                <div class="mini-loader" id="route-loader"></div>
             </button>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
                 <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
@@ -1459,6 +1471,7 @@
                 simulation.stop();
                 requestDraw();
             }
+            document.getElementById("search-loader").style.display = "none";
         }
 
         function updateSimulation(visibleNodes, visibleLinks) {
@@ -1688,6 +1701,8 @@
             filterRefVal.textContent = filterRef.value;
             
             const query = searchBox.value.toLowerCase().trim();
+            if (query.length > 0) document.getElementById("search-loader").style.display = "block";
+            
             executeQuery(true); // execute immediately
 
             // AUTO-ZOOM ONLY ON EXACT MATCH
@@ -1718,84 +1733,92 @@
                 return;
             }
 
-            // High-Speed BFS Implementation using Predecessors
-            const queue = [startId];
-            const predecessors = new Map();
-            predecessors.set(startId, null);
-            let found = false;
+            const loader = document.getElementById("route-loader");
+            loader.style.display = "block";
 
-            while (queue.length > 0) {
-                const node = queue.shift();
+            // Small delay to allow loader to paint
+            setTimeout(() => {
+                // High-Speed BFS Implementation using Predecessors
+                const queue = [startId];
+                const predecessors = new Map();
+                predecessors.set(startId, null);
+                let found = false;
 
-                if (node === endId) {
-                    found = true;
-                    break;
-                }
+                while (queue.length > 0) {
+                    const node = queue.shift();
 
-                const neighbors = adjacencyList.get(node) || [];
-                for (const neighbor of neighbors) {
-                    if (!predecessors.has(neighbor)) {
-                        predecessors.set(neighbor, node);
-                        queue.push(neighbor);
+                    if (node === endId) {
+                        found = true;
+                        break;
                     }
-                }
-                
-                if (predecessors.size > 30000) break; 
-            }
 
-            if (found) {
-                // Reconstruct path from predecessors
-                const foundPath = [];
-                let curr = endId;
-                while (curr !== null) {
-                    foundPath.push(curr);
-                    curr = predecessors.get(curr);
-                }
-                foundPath.reverse();
-
-                activePath = new Set(foundPath);
-                activePathLinks = new Set();
-                for (let i = 0; i < foundPath.length - 1; i++) {
-                    activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
-                }
-                
-                // POPULATE TEXTUAL PATH
-                const container = document.getElementById("route-result-container");
-                const pathText = document.getElementById("route-text-path");
-                pathText.innerHTML = "";
-                foundPath.forEach((title, idx) => {
-                    const step = document.createElement("div");
-                    step.style.cursor = "pointer";
-                    step.style.display = "flex";
-                    step.style.gap = "8px";
-                    step.innerHTML = `<span style="color:var(--color-bone); opacity:0.6">${idx + 1}.</span> <span>${title}</span>`;
-                    step.addEventListener("click", () => {
-                        const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                        nodeQuery.bind({ ":id": title });
-                        if (nodeQuery.step()) {
-                            const nodeRow = nodeQuery.getAsObject();
-                            selectNode(nodeRow);
+                    const neighbors = adjacencyList.get(node) || [];
+                    for (const neighbor of neighbors) {
+                        if (!predecessors.has(neighbor)) {
+                            predecessors.set(neighbor, node);
+                            queue.push(neighbor);
                         }
-                        nodeQuery.free();
-                    });
-                    pathText.appendChild(step);
-                });
-                container.style.display = "block";
-                
-                // Zoom to the start of the path
-                const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                startNodeStmt.bind({":id": startId});
-                if (startNodeStmt.step()) {
-                    const d = startNodeStmt.getAsObject();
-                    selectNode(d);
+                    }
+                    
+                    if (predecessors.size > 30000) break; 
                 }
-                startNodeStmt.free();
+
+                if (found) {
+                    // Reconstruct path from predecessors
+                    const foundPath = [];
+                    let curr = endId;
+                    while (curr !== null) {
+                        foundPath.push(curr);
+                        curr = predecessors.get(curr);
+                    }
+                    foundPath.reverse();
+
+                    activePath = new Set(foundPath);
+                    activePathLinks = new Set();
+                    for (let i = 0; i < foundPath.length - 1; i++) {
+                        activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
+                    }
+                    
+                    // POPULATE TEXTUAL PATH
+                    const container = document.getElementById("route-result-container");
+                    const pathText = document.getElementById("route-text-path");
+                    pathText.innerHTML = "";
+                    foundPath.forEach((title, idx) => {
+                        const step = document.createElement("div");
+                        step.style.cursor = "pointer";
+                        step.style.display = "flex";
+                        step.style.gap = "8px";
+                        step.innerHTML = `<span style="color:var(--color-bone); opacity:0.6">${idx + 1}.</span> <span>${title}</span>`;
+                        step.addEventListener("click", () => {
+                            const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                            nodeQuery.bind({ ":id": title });
+                            if (nodeQuery.step()) {
+                                const nodeRow = nodeQuery.getAsObject();
+                                selectNode(nodeRow);
+                            }
+                            nodeQuery.free();
+                        });
+                        pathText.appendChild(step);
+                    });
+                    container.style.display = "block";
+                    
+                    // Zoom to the start of the path
+                    const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                    startNodeStmt.bind({":id": startId});
+                    if (startNodeStmt.step()) {
+                        const d = startNodeStmt.getAsObject();
+                        selectNode(d);
+                    }
+                    startNodeStmt.free();
+                    
+                    requestDraw();
+                    console.log("Path found:", foundPath);
+                } else {
+                    alert("No path found between these articles in the current dataset.");
+                }
                 
-                requestDraw();
-                console.log("Path found:", foundPath);
-            } else {
-                alert("No path found between these articles in the current dataset.");
-            }
+                loader.style.display = "none";
+            }, 50);
         }
 
         routeBtn.addEventListener("click", findRoute);
