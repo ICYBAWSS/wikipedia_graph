@@ -1045,7 +1045,7 @@ else if (typeof exports === 'object'){
     </div>
 
     <!-- UI Panel: Title and Search -->
-    <div id="header-panel" class="panel glass">
+    <div id="header-panel" class="panel glass collapsed">
         <div class="eyebrow">Wikipedia Knowledge Web</div>
         <h1>
             <svg style="width:20px; height:20px; fill:currentColor; margin-top:2px" viewBox="0 0 24 24">
@@ -1113,14 +1113,14 @@ else if (typeof exports === 'object'){
     </div>
 
     <!-- UI Panel: Stats -->
-    <div id="stats-panel" class="panel glass">
+    <div id="stats-panel" class="panel glass collapsed">
         <div class="stat-item">Articles: <span id="stat-nodes">-</span></div>
         <div class="stat-item">Links: <span id="stat-links">-</span></div>
         <div class="stat-item">Most Referenced: <span id="stat-hub" style="color: var(--color-bone); font-weight: 500;">-</span></div>
     </div>
 
     <!-- UI Panel: Simulation Speed/Controls -->
-    <div id="controls-panel" class="panel glass">
+    <div id="controls-panel" class="panel glass collapsed">
         <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Physics Controls</div>
         
         <!-- High Performance Mode Toggle -->
@@ -1176,7 +1176,7 @@ else if (typeof exports === 'object'){
     </div>
 
     <!-- UI Panel: Legend -->
-    <div id="legend-panel" class="panel glass">
+    <div id="legend-panel" class="panel glass collapsed">
         <div class="legend-title">Categories</div>
         <div id="legend-list"></div>
         <div class="legend-title" style="margin-top: 14px; border-top: 1px solid var(--color-graphite); padding-top: 10px; margin-bottom: 8px;">Key</div>
@@ -1199,7 +1199,7 @@ else if (typeof exports === 'object'){
     <button id="legend-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg></span></button>
 
     <!-- UI Panel: Glass Sidebar details -->
-    <div id="detail-sidebar" class="panel glass">
+    <div id="detail-sidebar" class="panel glass collapsed">
         <button class="close-btn" id="sidebar-close">&times;</button>
         <div class="sidebar-header">
             <div class="node-category-tag" id="sidebar-tag">-</div>
@@ -1726,7 +1726,6 @@ else if (typeof exports === 'object'){
         function setupCollapsiblePanel(panelId, toggleId) {
             const panel = document.getElementById(panelId);
             const toggleBtn = document.getElementById(toggleId);
-            toggleBtn.classList.add("active");
             toggleBtn.addEventListener("click", () => {
                 const isCollapsed = panel.classList.toggle("collapsed");
                 if (isCollapsed) {
