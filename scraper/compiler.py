@@ -132,32 +132,13 @@ def compile_graph():
     valid_titles = set(articles_data.keys())
     print(f"Found {len(valid_titles)} valid nodes in the crawled set.")
     
-    # Prune links to limit density while keeping the most popular outbound connections
-    max_outbound_links = 30  # Increased from 6 to improve pathfinder connectivity
-    for source, info in articles_data.items():
-        valid_outbound = [t for t in info["links"] if t in valid_titles]
-        # Sort targets by views (popularity) descending
-        valid_outbound_sorted = sorted(
-            valid_outbound,
-            key=lambda t: articles_data[t]["views"],
-            reverse=True
-        )
-        # Keep only the top K
-        info["links"] = valid_outbound_sorted[:max_outbound_links]
-    
-    # Compute in-degree and out-degree
-    in_degrees = {title: 0 for title in valid_titles}
-    out_degrees = {title: 0 for title in valid_titles}
-    
+    # Keep ALL valid links between crawled nodes for the pathfinder
     links_json = []
     seen_links = set()
     
     for source, info in articles_data.items():
         for target in info["links"]:
             if target in valid_titles:
-                out_degrees[source] += 1
-                in_degrees[target] += 1
-                
                 # Check for duplicate undirected link representation
                 link_key = tuple(sorted([source, target]))
                 if link_key not in seen_links:
@@ -166,6 +147,13 @@ def compile_graph():
                         "source": source,
                         "target": target
                     })
+    
+    # Compute in-degree and out-degree based on the full link set
+    in_degrees = {title: 0 for title in valid_titles}
+    out_degrees = {title: 0 for title in valid_titles}
+    for l in links_json:
+        out_degrees[l["source"]] += 1
+        in_degrees[l["target"]] += 1
                     
     # Generate nodes list
     nodes_json = []
