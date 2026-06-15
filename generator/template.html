@@ -1516,21 +1516,6 @@
             if (hoveredNode) { hoveredNode = null; tooltip.style.opacity = 0; requestDraw(); }
         });
 
-        d3.select(canvas).on("click", (event) => {
-            if (!db) return;
-            const transformState = d3.zoomTransform(canvas);
-            const mouseX = (event.offsetX - transformState.x) / transformState.k;
-            const mouseY = (event.offsetY - transformState.y) / transformState.k;
-            let found = null;
-            for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i];
-                const dx = d.x - mouseX, dy = d.y - mouseY;
-                const r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 6) * Math.max(r, 6)) { found = d; break; }
-            }
-            if (found) { event.stopPropagation(); selectNode(found); } else { deselectNode(); }
-        });
-
         document.getElementById("sidebar-close").addEventListener("click", () => deselectNode());
 
         function setupCollapsiblePanel(panelId, toggleId) {
@@ -1770,10 +1755,14 @@
                 const d = graphData.nodes[i];
                 const dx = d.x - mouseX, dy = d.y - mouseY;
                 const r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 8) * Math.max(r, 8)) { found = d; break; }
+                if (dx * dx + dy * dy < Math.max(r, 10) * Math.max(r, 10)) { found = d; break; }
             }
             return found;
-        }).on("start", dragstarted).on("drag", dragged).on("end", dragended));
+        }).on("start", dragstarted).on("drag", dragged).on("end", dragended).on("start.click", (event) => {
+            // Check for click-only events to trigger sidebar
+            if (event.subject) selectNode(event.subject);
+            else deselectNode();
+        }));
 
         function dragstarted(event) {
             isInteracting = true;
