@@ -966,6 +966,7 @@
         let highPerfMode = true;
         let db = null;
         let graphData = { nodes: [], links: [] }; // currently loaded viewport data
+        let adjacencyList = new Map(); // In-memory map for fast pathfinding
         let selectedNode = null;
         let hoveredNode = null;
         let isInteracting = false;
@@ -1165,6 +1166,18 @@
                 datalist.appendChild(option);
             }
             allNodesStmt.free();
+
+            // Populate in-memory adjacency list for pathfinder
+            adjacencyList = new Map();
+            const allLinksStmt = db.prepare("SELECT source, target FROM links");
+            while (allLinksStmt.step()) {
+                const { source, target } = allLinksStmt.getAsObject();
+                if (!adjacencyList.has(source)) adjacencyList.set(source, []);
+                if (!adjacencyList.has(target)) adjacencyList.set(target, []);
+                adjacencyList.get(source).push(target);
+                adjacencyList.get(target).push(source); // Undirected for easier discovery
+            }
+            allLinksStmt.free();
 
             updateHighPerfSettings();
         }
@@ -1453,9 +1466,12 @@
         async function findRoute() {
             const startId = routeStart.value.trim();
             const endId = routeEnd.value.trim();
-            if (!startId || !endId) return;
+            if (!startId || !endId || !adjacencyList.has(startId) || !adjacencyList.has(endId)) {
+                if (startId && endId) alert("One or both articles not found in the current visualization.");
+                return;
+            }
 
-            // BFS Implementation (Undirected for better discoverability)
+            // BFS Implementation using pre-loaded adjacency list (Much faster!)
             const queue = [[startId]];
             const visited = new Set([startId]);
             let foundPath = null;
@@ -1469,21 +1485,15 @@
                     break;
                 }
 
-                // Query database for links involving this node (source OR target)
-                const stmt = db.prepare("SELECT source, target FROM links WHERE source = :id OR target = :id");
-                stmt.bind({ ":id": node });
-                while (stmt.step()) {
-                    const row = stmt.getAsObject();
-                    const target = row.source === node ? row.target : row.source;
-                    if (!visited.has(target)) {
-                        visited.add(target);
-                        queue.push([...path, target]);
+                const neighbors = adjacencyList.get(node) || [];
+                for (const neighbor of neighbors) {
+                    if (!visited.has(neighbor)) {
+                        visited.add(neighbor);
+                        queue.push([...path, neighbor]);
                     }
                 }
-                stmt.free();
                 
-                // Safety break for extremely large graphs
-                if (visited.size > 10000) break;
+                if (visited.size > 20000) break; // Extended limit for memory-based search
             }
 
             if (foundPath) {
