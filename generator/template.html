@@ -1545,22 +1545,24 @@
         function applyFilters() {
             filterViewsVal.textContent = formatViewsCount(+filterViews.value);
             filterRefVal.textContent = filterRef.value;
-            deselectNode(); 
             
             const query = searchBox.value.toLowerCase().trim();
             executeQuery(true); // execute immediately
 
-            // AUTO-ZOOM TO FIRST MATCH
-            if (query.length > 2 && graphData.nodes.length > 0) {
-                // Look for an exact match or first prefix match
-                const match = graphData.nodes.find(n => n.id.toLowerCase() === query) || graphData.nodes[0];
-                if (match) {
-                    selectNode(match, false); // select without additional redraw
+            // AUTO-ZOOM ONLY ON EXACT MATCH
+            if (query.length > 1) {
+                // Find all nodes in the database that match exactly (case-insensitive)
+                const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
+                stmt.bind({ ":query": searchBox.value.trim() });
+                if (stmt.step()) {
+                    const match = stmt.getAsObject();
+                    selectNode(match, false);
                 }
+                stmt.free();
             }
         }
 
-        // --- BFS ROUTE FINDER LOGIC ---
+        // --- OPTIMIZED BFS ROUTE FINDER ---
         const routeStart = document.getElementById("route-start");
         const routeEnd = document.getElementById("route-end");
         const routeBtn = document.getElementById("find-route-btn");
@@ -1575,32 +1577,41 @@
                 return;
             }
 
-            // BFS Implementation using pre-loaded adjacency list (Much faster!)
-            const queue = [[startId]];
-            const visited = new Set([startId]);
-            let foundPath = null;
+            // High-Speed BFS Implementation using Predecessors
+            const queue = [startId];
+            const predecessors = new Map();
+            predecessors.set(startId, null);
+            let found = false;
 
             while (queue.length > 0) {
-                const path = queue.shift();
-                const node = path[path.length - 1];
+                const node = queue.shift();
 
                 if (node === endId) {
-                    foundPath = path;
+                    found = true;
                     break;
                 }
 
                 const neighbors = adjacencyList.get(node) || [];
                 for (const neighbor of neighbors) {
-                    if (!visited.has(neighbor)) {
-                        visited.add(neighbor);
-                        queue.push([...path, neighbor]);
+                    if (!predecessors.has(neighbor)) {
+                        predecessors.set(neighbor, node);
+                        queue.push(neighbor);
                     }
                 }
                 
-                if (visited.size > 20000) break; // Extended limit for memory-based search
+                if (predecessors.size > 30000) break; 
             }
 
-            if (foundPath) {
+            if (found) {
+                // Reconstruct path from predecessors
+                const foundPath = [];
+                let curr = endId;
+                while (curr !== null) {
+                    foundPath.push(curr);
+                    curr = predecessors.get(curr);
+                }
+                foundPath.reverse();
+
                 activePath = new Set(foundPath);
                 activePathLinks = new Set();
                 for (let i = 0; i < foundPath.length - 1; i++) {
