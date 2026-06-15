@@ -931,42 +931,6 @@
         </div>
 
         <datalist id="article-list"></datalist>
-
-        <!-- Advanced Filters Section -->
-        <div id="filter-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
-            <!-- Category Filter -->
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-                <span style="font-size: 12px; color: var(--color-ash); font-weight: 400; line-height: 1.5;">Filter Topic</span>
-                <select id="filter-category" class="filter-select">
-                    <option value="all">All Topics</option>
-                    <option value="Science & Technology">Science & Technology</option>
-                    <option value="History & Society">History & Society</option>
-                    <option value="Art & Culture">Art & Culture</option>
-                    <option value="Philosophy & Religion">Philosophy & Religion</option>
-                    <option value="Geography & Places">Geography & Places</option>
-                    <option value="Biography & People">Biography & People (People)</option>
-                    <option value="Other & General">Other & General</option>
-                </select>
-            </div>
-            
-            <!-- Min Views Slider -->
-            <div style="display: flex; flex-direction: column; gap: 8px;">
-                <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--color-ash); line-height: 1.5;">
-                    <span>Min Pageviews</span>
-                    <span id="filter-views-val" style="font-weight: 500; color: var(--color-bone);">0</span>
-                </div>
-                <input type="range" class="control-slider" id="filter-views" min="0" max="10000000" step="100000" value="0" style="height: 4px;">
-            </div>
-
-            <!-- Min References Slider -->
-            <div style="display: flex; flex-direction: column; gap: 8px;">
-                <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--color-ash); line-height: 1.5;">
-                    <span>Min References</span>
-                    <span id="filter-ref-val" style="font-weight: 500; color: var(--color-bone);">0</span>
-                </div>
-                <input type="range" class="control-slider" id="filter-ref" min="0" max="100" step="1" value="0" style="height: 4px;">
-            </div>
-        </div>
     </div>
 
     <!-- UI Panel: Stats -->
