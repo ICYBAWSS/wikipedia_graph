@@ -1009,7 +1009,7 @@
     <button id="legend-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg></span></button>
 
     <!-- UI Panel: Glass Sidebar details -->
-    <div id="detail-sidebar" class="panel glass collapsed">
+    <div id="detail-sidebar" class="panel glass">
         <button class="close-btn" id="sidebar-close">&times;</button>
         <div class="sidebar-header">
             <div class="node-category-tag" id="sidebar-tag">-</div>
@@ -1745,6 +1745,28 @@
             }
         }
 
+        d3.select(canvas).on("click", (event) => {
+            if (!db) return;
+            const transformState = d3.zoomTransform(canvas);
+            const mouseX = (event.offsetX - transformState.x) / transformState.k;
+            const mouseY = (event.offsetY - transformState.y) / transformState.k;
+            let found = null;
+            for (let i = graphData.nodes.length - 1; i >= 0; i--) {
+                const d = graphData.nodes[i];
+                const dx = d.x - mouseX, dy = d.y - mouseY;
+                const r = nodeRadiusScale(d.views);
+                if (dx * dx + dy * dy < Math.max(r, 12) * Math.max(r, 12)) {
+                    found = d;
+                    break;
+                }
+            }
+            if (found) {
+                selectNode(found);
+            } else {
+                deselectNode();
+            }
+        });
+
         d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
             if (!db) return null;
             const transformState = d3.zoomTransform(canvas);
@@ -1755,14 +1777,10 @@
                 const d = graphData.nodes[i];
                 const dx = d.x - mouseX, dy = d.y - mouseY;
                 const r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 10) * Math.max(r, 10)) { found = d; break; }
+                if (dx * dx + dy * dy < Math.max(r, 8) * Math.max(r, 8)) { found = d; break; }
             }
             return found;
-        }).on("start", dragstarted).on("drag", dragged).on("end", dragended).on("start.click", (event) => {
-            // Check for click-only events to trigger sidebar
-            if (event.subject) selectNode(event.subject);
-            else deselectNode();
-        }));
+        }).on("start", dragstarted).on("drag", dragged).on("end", dragended));
 
         function dragstarted(event) {
             isInteracting = true;
