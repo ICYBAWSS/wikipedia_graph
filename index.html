@@ -1474,7 +1474,7 @@ else if (typeof exports === 'object'){
                     if (isPathLink) {
                         ctx.save();
                         ctx.strokeStyle = "#ffffff";
-                        ctx.lineWidth = 3 / transform.k;
+                        ctx.lineWidth = 4 / transform.k;
                         ctx.beginPath();
                         ctx.moveTo(sourceNode.x, sourceNode.y);
                         ctx.lineTo(targetNode.x, targetNode.y);
@@ -1482,6 +1482,9 @@ else if (typeof exports === 'object'){
                         ctx.restore();
                         return; // don't draw in main batch
                     }
+
+                    // HIDE ALL OTHER LINKS if a path is active to isolate the route
+                    if (activePath.size > 0) return;
 
                     if (focusNode && sourceNode.id !== focusNode.id && targetNode.id !== focusNode.id) return;
                     ctx.moveTo(sourceNode.x, sourceNode.y);
@@ -1766,8 +1769,12 @@ else if (typeof exports === 'object'){
         }
 
         function deselectNode() {
-            if (selectedNode === null) return;
-            selectedNode = null; executeQuery();
+            if (selectedNode === null && activePath.size === 0) return;
+            selectedNode = null;
+            activePath = new Set();
+            activePathLinks = new Set();
+            executeQuery();
+
             sidebar.classList.remove("active");
             document.getElementById("controls-panel").style.transform = "translateX(0)";
             document.getElementById("legend-panel").style.transform = "translateX(0)";
