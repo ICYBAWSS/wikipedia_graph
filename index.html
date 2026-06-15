@@ -1442,11 +1442,6 @@ else if (typeof exports === 'object'){
             nodeRadiusScale.domain([0, maxViews]);
             nodeOpacityScale.domain([0, maxInDegree]);
 
-            filterViews.max = maxViews;
-            filterViews.step = Math.round(maxViews / 100) || 100000;
-            filterRef.max = maxInDegree;
-            filterRef.step = 1;
-
             const linkMetaStmt = db.prepare("SELECT COUNT(*) as cl FROM links");
             linkMetaStmt.step();
             const totalLinks = linkMetaStmt.getAsObject().cl;
