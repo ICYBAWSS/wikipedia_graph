@@ -71,19 +71,53 @@ def clean_categories(raw_categories_json):
     except Exception:
         return []
 
-def classify_topic(title, cleaned_categories):
-    """Assigns a topic based on keywords in title and categories with priority logic."""
+def classify_topic(title, cleaned_categories, wikidata_type=None):
+    """
+    Assigns a topic based on Wikidata type (authoritative) 
+    with a keyword fallback for legacy data.
+    """
+    # Authoritative Wikidata Mapping
+    if wikidata_type:
+        wd = wikidata_type.lower()
+        
+        # Biography
+        if any(k in wd for k in ["human", "person", "man", "woman", "monarch", "politician", "saint", "author", "writer"]):
+            return "Biography & People"
+        
+        # Science & Tech
+        if any(k in wd for k in ["science", "technology", "software", "computer", "algorithm", "disease", "medicine", "space", "star", "galaxy"]):
+            return "Science & Technology"
+            
+        # History & Society
+        if any(k in wd for k in ["history", "war", "battle", "treaty", "empire", "election", "government", "law", "revolution", "dynasty"]):
+            return "History & Society"
+            
+        # Art & Culture
+        if any(k in wd for k in ["film", "movie", "television", "album", "music", "song", "painting", "sculpture", "novel", "book", "sport", "game", "culture"]):
+            return "Art & Culture"
+            
+        # Philosophy & Religion
+        if any(k in wd for k in ["philosophy", "religion", "myth", "god", "deity", "spiritual", "church", "temple", "bible"]):
+            return "Philosophy & Religion"
+            
+        # Geography
+        if any(k in wd for k in ["country", "city", "island", "mountain", "river", "continent", "state", "region", "settlement"]):
+            return "Geography & Places"
+
+        # Websites / Adult to Other
+        if any(k in wd for k in ["website", "pornography", "service", "company", "corporation"]):
+            return "Other & General"
+
+    # LEGACY FALLBACK: Keyword-based logic
     combined_text = (title + " " + " ".join(cleaned_categories)).lower()
     
-    # Priority 1: People / Biography
-    # We look for high-signal person keywords
+    # Priority check for people
     bio_keywords = TOPICS["Biography & People"]
     if any(k in combined_text for k in bio_keywords):
-        # Exclude organizations/websites that might mention people
         if not any(k in combined_text for k in ["website", "company", "corporation", "organization", "service"]):
             return "Biography & People"
 
-    # Priority 2: Technical/Adult websites to Other
+    # Priority check for websites
     if any(k in combined_text for k in ["website", "pornography", "pornstars", "streaming service", "social network", "dot-com"]):
         return "Other & General"
 
@@ -91,18 +125,10 @@ def classify_topic(title, cleaned_categories):
     for topic, keywords in TOPICS.items():
         for keyword in keywords:
             if keyword in combined_text:
-                # Weight title matches higher than category matches
                 scores[topic] += (combined_text.count(keyword) + (5 if keyword in title.lower() else 0))
                 
-    # Find the topic with the highest score
-    best_topic = "Other & General"
-    best_score = 0
-    for topic, score in scores.items():
-        if score > best_score:
-            best_score = score
-            best_topic = topic
-            
-    return best_topic
+    best_topic = max(scores, key=scores.get)
+    return best_topic if scores[best_topic] > 0 else "Other & General"
 
 def compile_graph():
     """Reads database, builds nodes & links, and saves to results/graph_data.json."""
@@ -113,9 +139,9 @@ def compile_graph():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Select all crawled articles
+    # Select all crawled articles including new Wikidata fields
     cursor.execute("""
-        SELECT title, snippet, views, categories, links 
+        SELECT title, snippet, views, categories, links, wikidata_type 
         FROM articles 
         WHERE crawled = 1 AND snippet IS NOT NULL
     """)
@@ -126,7 +152,7 @@ def compile_graph():
     
     # Store article details
     articles_data = {}
-    for title, snippet, views, categories, links in rows:
+    for title, snippet, views, categories, links, wd_type in rows:
         try:
             links_list = json.loads(links) if links else []
         except Exception:
@@ -136,7 +162,8 @@ def compile_graph():
             "snippet": snippet,
             "views": views or 0,
             "categories": categories,
-            "links": links_list
+            "links": links_list,
+            "wd_type": wd_type
         }
         
     valid_titles = set(articles_data.keys())
@@ -149,16 +176,11 @@ def compile_graph():
     for source, info in articles_data.items():
         for target in info["links"]:
             if target in valid_titles:
-                # Check for duplicate undirected link representation
                 link_key = tuple(sorted([source, target]))
                 if link_key not in seen_links:
                     seen_links.add(link_key)
-                    links_json.append({
-                        "source": source,
-                        "target": target
-                    })
+                    links_json.append({"source": source, "target": target})
     
-    # Compute in-degree and out-degree based on the full link set
     in_degrees = {title: 0 for title in valid_titles}
     out_degrees = {title: 0 for title in valid_titles}
     for l in links_json:
@@ -168,9 +190,8 @@ def compile_graph():
     # Generate nodes list
     nodes_json = []
     for title, info in articles_data.items():
-        # Clean and classify
         cleaned_cats = clean_categories(info["categories"])
-        category = classify_topic(title, cleaned_cats)
+        category = classify_topic(title, cleaned_cats, info["wd_type"])
         
         nodes_json.append({
             "id": title,
@@ -178,7 +199,8 @@ def compile_graph():
             "snippet": info["snippet"],
             "category": category,
             "inDegree": in_degrees[title],
-            "outDegree": out_degrees[title]
+            "outDegree": out_degrees[title],
+            "wd_type": info["wd_type"]
         })
         
     # Calculate coordinate layout positions offline

@@ -30,6 +30,8 @@ def init_db():
             views INTEGER,
             categories TEXT,
             links TEXT,
+            wikidata_id TEXT,
+            wikidata_type TEXT,
             crawled INTEGER DEFAULT 0,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -38,6 +40,72 @@ def init_db():
     conn.close()
 
 def get_db_connection():
+    return sqlite3.connect(DB_PATH)
+
+def get_wikidata_type(title):
+    """
+    Fetches the Wikidata QID and its 'Instance Of' (P31) label for an article.
+    """
+    params = {
+        "action": "query",
+        "prop": "pageprops",
+        "ppprop": "wikibase_item",
+        "titles": title,
+        "redirects": 1,
+        "format": "json"
+    }
+
+    try:
+        r = requests.get(WIKI_API_URL, params=params, headers=HEADERS, timeout=10)
+        data = r.json()
+        pages = data.get("query", {}).get("pages", {})
+        qid = None
+        for pid in pages:
+            qid = pages[pid].get("pageprops", {}).get("wikibase_item")
+            if qid: break
+
+        if not qid: return None, None
+
+        # Now query Wikidata for the label of P31 (Instance Of)
+        wd_url = "https://www.wikidata.org/w/api.php"
+        wd_params = {
+            "action": "wbgetentities",
+            "ids": qid,
+            "props": "claims",
+            "format": "json"
+        }
+
+        wr = requests.get(wd_url, params=wd_params, headers=HEADERS, timeout=10)
+        wdata = wr.json()
+        claims = wdata.get("entities", {}).get(qid, {}).get("claims", {})
+
+        # P31 = Instance Of
+        p31_claims = claims.get("P31", [])
+        if not p31_claims: return qid, "Other"
+
+        # Get the label of the first instance_of target
+        type_qid = p31_claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("id")
+        if not type_qid: return qid, "Other"
+
+        # Get label for that type_qid
+        label_params = {
+            "action": "wbgetentities",
+            "ids": type_qid,
+            "props": "labels",
+            "languages": "en",
+            "format": "json"
+        }
+        lr = requests.get(wd_url, params=label_params, headers=HEADERS, timeout=10)
+        ldata = lr.json()
+        label = ldata.get("entities", {}).get(type_qid, {}).get("labels", {}).get("en", {}).get("value", "Other")
+
+        return qid, label
+
+    except Exception as e:
+        print(f"Error fetching Wikidata for {title}: {e}")
+        return None, None
+
+def get_article_details_api(title):
     return sqlite3.connect(DB_PATH)
 
 def fetch_top_seeds():
@@ -229,15 +297,22 @@ def run_crawler(max_nodes=1500, delay=0.1):
             crawled_count += 1
             continue
             
+        # NEW: Fetch official Wikidata Type
+        wd_id, wd_type = get_wikidata_type(title)
+        
         cursor.execute("""
             UPDATE articles 
-            SET snippet = ?, views = ?, categories = ?, links = ?, crawled = 1, last_updated = CURRENT_TIMESTAMP
+            SET snippet = ?, views = ?, categories = ?, links = ?, 
+                wikidata_id = ?, wikidata_type = ?,
+                crawled = 1, last_updated = CURRENT_TIMESTAMP
             WHERE title = ?
         """, (
             details["snippet"],
             details["views"] if details["views"] > 0 else views,
             json.dumps(details["categories"]),
             json.dumps(details["links"]),
+            wd_id,
+            wd_type,
             title
         ))
         
