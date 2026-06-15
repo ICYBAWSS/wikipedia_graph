@@ -24,7 +24,7 @@
     <style>
         :root {
             /* Colors - Cecilia May Primary Theme (Nostalgic Warmness) */
-            --color-void: #1e1c18;         /* Deep warm brown background */
+            --color-void: #2c2720;         /* Custom deep warm background */
             --color-bone: #d6d2ca;         /* Warm beige text */
             --color-ash: #9d9894;          /* Muted warm gray text */
             --color-frost: #f6f5f2;        /* Light warm cream */
@@ -1371,7 +1371,7 @@
 
                 maxViews = m.mv || 10000000; maxInDegree = m.md || 1;
                 nodeRadiusScale.domain([0, maxViews]); nodeOpacityScale.domain([0, maxInDegree]);
-                document.getElementById("s-nodes").textContent = (m.cn || 0).toLocaleString();
+                document.getElementById("stat-nodes").textContent = (m.cn || 0).toLocaleString();
                 
                 const s2 = db.prepare("SELECT COUNT(*) as cl FROM links");
                 s2.step(); document.getElementById("stat-links").textContent = (s2.getAsObject().cl || 0).toLocaleString(); s2.free();
