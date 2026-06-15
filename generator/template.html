@@ -1157,7 +1157,7 @@
         const sidebar = document.getElementById("detail-sidebar");
 
         // Global scales and parameters
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([5, 26]);
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([3, 12]);
         let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
         let maxViews = 10000000;
         let maxInDegree = 1;
@@ -1499,15 +1499,15 @@
             const yMax = (height - transform.y) / transform.k;
 
             const isPathActive = activePath.size > 0;
-            const showSkeleton = highPerfMode && isInteracting;
+            const isMoving = isInteracting;
 
             // 1. Draw Links
             ctx.beginPath();
-            const currentLinks = showSkeleton ? linkCache : graphData.links;
-
-            currentLinks.forEach(l => {
-                const sId = l.s || (typeof l.source === "object" ? l.source.id : l.source);
-                const tId = l.t || (typeof l.target === "object" ? l.target.id : l.target);
+            
+            // ALWAYS use linkCache for visual continuity
+            linkCache.forEach(l => {
+                const sId = l.s;
+                const tId = l.t;
 
                 // Check if this link is part of the path
                 const isPathLink = isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`));
@@ -1515,8 +1515,8 @@
                 if (isPathLink) {
                     ctx.save(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4 / transform.k;
                     ctx.beginPath();
-                    const sPos = activeNodeMap.get(sId) || positionCache.get(sId);
-                    const tPos = activeNodeMap.get(tId) || positionCache.get(tId);
+                    const sPos = positionCache.get(sId);
+                    const tPos = positionCache.get(tId);
                     if (sPos && tPos) {
                         ctx.moveTo(sPos.x, sPos.y); ctx.lineTo(tPos.x, tPos.y);
                         ctx.stroke();
@@ -1527,39 +1527,45 @@
 
                 if (isPathActive) return; // Isolate path
 
-                if (showSkeleton) {
-                    const sMeta = nodeMetadata.get(sId);
-                    const tMeta = nodeMetadata.get(tId);
-                    if (!sMeta || !tMeta || (sMeta.views < 100000 && tMeta.views < 100000)) return;
-                }
+                const sPos = positionCache.get(sId);
+                const tPos = positionCache.get(tId);
+                if (!sPos || !tPos) return;
 
-                if (activeFocusNode && sId !== activeFocusNode.id && tId !== activeFocusNode.id) return;
+                // Viewport culling (fast)
+                const sIn = sPos.x > xMin && sPos.x < xMax && sPos.y > yMin && sPos.y < yMax;
+                const tIn = tPos.x > xMin && tPos.x < xMax && tPos.y > yMin && tPos.y < yMax;
+                if (!sIn && !tIn) return;
 
-                const sourceNode = activeNodeMap.get(sId) || positionCache.get(sId);
-                const targetNode = activeNodeMap.get(tId) || positionCache.get(tId);
-                if (!sourceNode || !targetNode) return;
+                // DENSITY FILTER: Limit visible connections for clarity and FPS
+                // We use views as a rank proxy to show the most important connections first
+                const sMeta = nodeMetadata.get(sId);
+                const tMeta = nodeMetadata.get(tId);
+                if (!sMeta || !tMeta) return;
                 
-                // Viewport culling
-                if (sourceNode.x < xMin || sourceNode.x > xMax || sourceNode.y < yMin || sourceNode.y > yMax) {
-                    if (targetNode.x < xMin || targetNode.x > xMax || targetNode.y < yMin || targetNode.y > yMax) return;
+                // Show more links if focused, else apply density slider
+                const isFocused = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
+                if (!isFocused) {
+                    // Logic: Show fewer links while moving, or based on density slider
+                    const viewLimit = isMoving ? 500000 : 100000;
+                    if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
                 }
 
-                ctx.moveTo(sourceNode.x, sourceNode.y);
-                ctx.lineTo(targetNode.x, targetNode.y);
+                ctx.moveTo(sPos.x, sPos.y);
+                ctx.lineTo(tPos.x, tPos.y);
             });
 
             if (activeFocusNode) {
                 ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5 / transform.k;
             } else {
-                ctx.strokeStyle = `rgba(214, 210, 202, ${showSkeleton ? 0.02 : 0.08})`; 
-                ctx.lineWidth = 0.6 / transform.k;
+                ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.02 : 0.06})`; 
+                ctx.lineWidth = 0.5 / transform.k;
             }
             ctx.stroke();
 
             // 2. Draw Nodes
             graphData.nodes.forEach(d => {
                 const r = nodeRadiusScale(d.views);
-                if (isInteracting && transform.k < 0.1 && r * transform.k < 0.5) return;
+                if (isMoving && transform.k < 0.1 && r * transform.k < 0.5) return;
                 if (d.x + r < xMin || d.x - r > xMax || d.y + r < yMin || d.y - r > yMax) return;
 
                 ctx.beginPath();
@@ -1578,11 +1584,11 @@
                 ctx.fill();
 
                 if (isHovered || isSelected || isPathNode) {
-                    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = (isPathNode ? 4 : 2.5) / transform.k; ctx.stroke();
+                    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = (isPathNode ? 3 : 1.5) / transform.k; ctx.stroke();
                 } else if (d.inDegree > maxInDegree * 0.15) {
-                    ctx.strokeStyle = categoryColors[d.category]; ctx.lineWidth = 1.2 / transform.k; ctx.stroke();
+                    ctx.strokeStyle = categoryColors[d.category]; ctx.lineWidth = 1.0 / transform.k; ctx.stroke();
                 } else if (transform.k > 0.5) {
-                    ctx.strokeStyle = "rgba(0,0,0,0.65)"; ctx.lineWidth = 1 / transform.k; ctx.stroke();
+                    ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 0.8 / transform.k; ctx.stroke();
                 }
             });
             ctx.globalAlpha = 1.0;
