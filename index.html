@@ -1808,7 +1808,15 @@ else if (typeof exports === 'object'){
                 const isPathNode = isPathActive && activePath.has(d.id);
                 
                 if (isHovered || isSelected || isPathNode) {
-                    ctx.fillStyle = isPathNode ? '#ffffff' : '#e8b840';
+                    if (isPathNode) {
+                        ctx.fillStyle = '#ffffff';
+                    } else {
+                        const gradient = ctx.createLinearGradient(d.x - r, d.y - r, d.x + r, d.y + r);
+                        gradient.addColorStop(0, '#d35849');   // Terracotta Red
+                        gradient.addColorStop(0.5, '#e8b840'); // Golden Yellow
+                        gradient.addColorStop(1, '#588fa8');   // Slate Blue
+                        ctx.fillStyle = gradient;
+                    }
                     ctx.globalAlpha = 1.0;
                 } else {
                     ctx.fillStyle = categoryColors[d.category] || "#ffffff";
