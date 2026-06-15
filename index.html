@@ -1069,6 +1069,13 @@ else if (typeof exports === 'object'){
 
         <div class="control-group">
             <div class="control-label">
+                <span>Link Density</span>
+                <span id="density-val">10</span>
+            </div>
+            <input type="range" class="control-slider" id="slider-density" min="1" max="50" value="10">
+        </div>
+        <div class="control-group">
+            <div class="control-label">
                 <span>Link Distance</span>
                 <span id="dist-val">120</span>
             </div>
@@ -1234,6 +1241,7 @@ else if (typeof exports === 'object'){
         let currentDist = 120;
         let currentCharge = -200;
         let currentCollision = 20;
+        let currentDensity = 10;
         let gravityStrength = 0.05;
 
         // Custom gravity force between connected nodes: F = G * m1 * m2 / r^2
@@ -1423,15 +1431,27 @@ else if (typeof exports === 'object'){
 
             const links = [];
             if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
+                // Use a Rank-based query to keep only the top N links per node in the current view
                 const linkSql = `
-                    SELECT l.source, l.target FROM links l
-                    JOIN nodes n1 ON l.source = n1.id
-                    JOIN nodes n2 ON l.target = n2.id
-                    WHERE n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax
-                      AND n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax
+                    WITH RankedLinks AS (
+                        SELECT l.source, l.target,
+                        ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank
+                        FROM links l
+                        JOIN nodes n1 ON l.source = n1.id
+                        JOIN nodes n2 ON l.target = n2.id
+                        WHERE n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax
+                          AND n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax
+                    )
+                    SELECT source, target FROM RankedLinks WHERE rank <= :density
                 `;
                 const linkStmt = db.prepare(linkSql);
-                linkStmt.bind({ ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding });
+                linkStmt.bind({ 
+                    ":xMin": xMin - padding, 
+                    ":xMax": xMax + padding, 
+                    ":yMin": yMin - padding, 
+                    ":yMax": yMax + padding,
+                    ":density": currentDensity
+                });
                 while (linkStmt.step()) {
                     const row = linkStmt.getAsObject();
                     links.push({ source: row.source, target: row.target });
@@ -1831,6 +1851,13 @@ else if (typeof exports === 'object'){
             if (!event.active) simulation.alphaTarget(0);
             event.subject.fx = null; event.subject.fy = null; executeQuery();
         }
+
+        const sliderDensity = document.getElementById("slider-density");
+        sliderDensity.addEventListener("input", () => {
+            currentDensity = +sliderDensity.value;
+            document.getElementById("density-val").textContent = currentDensity;
+            executeQuery();
+        });
 
         const sliderDistance = document.getElementById("slider-distance");
         sliderDistance.addEventListener("input", () => {
