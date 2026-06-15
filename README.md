@@ -1,3 +1,5 @@
+## Just use the github pages link https://icybawss.github.io/wikipedia_graph/ on the right to use the project no need to do everything below unless you would like to remake it or edit.
+
 # 1. Project Documentation (README.md)
 ## Wikipedia Graph Visualization Pipeline
 
