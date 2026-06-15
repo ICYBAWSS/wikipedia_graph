@@ -791,20 +791,22 @@
             <svg class="search-icon" viewBox="0 0 24 24">
                 <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
             </svg>
-            <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web...">
+            <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web..." list="article-list">
         </div>
 
         <!-- Route Finder Section -->
         <div id="route-finder-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
             <div class="eyebrow" style="margin-bottom: 4px;">Route Finder</div>
             <div style="display: flex; gap: 8px;">
-                <input type="text" class="search-input" id="route-start" placeholder="Start Article" style="padding: 8px 12px; font-size: 12px;">
-                <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px;">
+                <input type="text" class="search-input" id="route-start" placeholder="Start Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
+                <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
             </div>
             <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none;">
                 Find Shortest Path
             </button>
         </div>
+
+        <datalist id="article-list"></datalist>
 
         <!-- Advanced Filters Section -->
         <div id="filter-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 16px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
@@ -1154,6 +1156,16 @@
             document.getElementById("stat-hub").textContent = hub.id + " (" + hub.inDegree + ")";
             hubStmt.free();
 
+            // Populate autocomplete datalist
+            const datalist = document.getElementById("article-list");
+            const allNodesStmt = db.prepare("SELECT id FROM nodes ORDER BY id ASC");
+            while (allNodesStmt.step()) {
+                const option = document.createElement("option");
+                option.value = allNodesStmt.getAsObject().id;
+                datalist.appendChild(option);
+            }
+            allNodesStmt.free();
+
             updateHighPerfSettings();
         }
 
@@ -1443,7 +1455,7 @@
             const endId = routeEnd.value.trim();
             if (!startId || !endId) return;
 
-            // BFS Implementation
+            // BFS Implementation (Undirected for better discoverability)
             const queue = [[startId]];
             const visited = new Set([startId]);
             let foundPath = null;
@@ -1457,11 +1469,12 @@
                     break;
                 }
 
-                // Query database for links from this node
-                const stmt = db.prepare("SELECT target FROM links WHERE source = :id");
+                // Query database for links involving this node (source OR target)
+                const stmt = db.prepare("SELECT source, target FROM links WHERE source = :id OR target = :id");
                 stmt.bind({ ":id": node });
                 while (stmt.step()) {
-                    const target = stmt.getAsObject().target;
+                    const row = stmt.getAsObject();
+                    const target = row.source === node ? row.target : row.source;
                     if (!visited.has(target)) {
                         visited.add(target);
                         queue.push([...path, target]);
@@ -1470,7 +1483,7 @@
                 stmt.free();
                 
                 // Safety break for extremely large graphs
-                if (visited.size > 5000) break;
+                if (visited.size > 10000) break;
             }
 
             if (foundPath) {

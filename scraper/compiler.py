@@ -133,7 +133,7 @@ def compile_graph():
     print(f"Found {len(valid_titles)} valid nodes in the crawled set.")
     
     # Prune links to limit density while keeping the most popular outbound connections
-    max_outbound_links = 6  # Limit to top 6 connections per node
+    max_outbound_links = 30  # Increased from 6 to improve pathfinder connectivity
     for source, info in articles_data.items():
         valid_outbound = [t for t in info["links"] if t in valid_titles]
         # Sort targets by views (popularity) descending
