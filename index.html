@@ -226,7 +226,7 @@ else if (typeof exports === 'object'){
             --color-frost: #f6f5f2;        /* Light warm cream */
             --color-graphite: #36322b;     /* Deep warm charcoal border */
             --color-lilac-haze: #e8b840;   /* Warm golden yellow accent */
-            --gradient-iridescent: linear-gradient(135deg, #d35849 0%, #e8b840 50%, #588fa8 100%);
+            --gradient-iridescent: linear-gradient(135deg, #e8b840 0%, #588fa8 100%);
 
             /* Typography — Font Families */
             --font-aeonik: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -668,7 +668,7 @@ else if (typeof exports === 'object'){
             font-size: 13px;
             color: var(--color-bone);
             pointer-events: none;
-            z-index: 100;
+            z-index: 10;
             opacity: 0;
             transition: opacity 0.15s ease-in-out;
             box-shadow: var(--shadow-subtle);
@@ -1106,7 +1106,6 @@ else if (typeof exports === 'object'){
                 <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
             </svg>
             <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web..." list="article-list">
-            <div class="mini-loader" id="search-loader" style="position: absolute; right: 14px; top: 15px;"></div>
         </div>
 
         <!-- Route Finder Section -->
@@ -1266,6 +1265,7 @@ else if (typeof exports === 'object'){
         let activeNodeMap = new Map();
         let activeFocusNeighbors = new Set();
         let activeFocusNode = null;
+        let hiddenCategories = new Set(); // Categories currently toggled off
 
         let selectedNode = null;
         let hoveredNode = null;
@@ -1274,36 +1274,50 @@ else if (typeof exports === 'object'){
 
         // Topic Color mapping helper - Cecilia May Primary Theme warm palette
         const categoryColors = {
+            "Biography & People": "#a8788a",     // Muted rose / plum
             "Science & Technology": "#588fa8",   // Warm slate blue
             "History & Society": "#d35849",      // Warm terra cotta red
             "Art & Culture": "#e8b840",          // Warm golden yellow
             "Philosophy & Religion": "#748c69",  // Muted warm sage green
             "Geography & Places": "#c58c64",     // Muted clay orange
-            "Biography & People": "#a8788a",     // Muted rose / plum
             "Other & General": "#c3aed6"         // Bright lavender
         };
 
-        const categoryGlowColors = {
-            "Science & Technology": "rgba(88, 143, 168, 0.15)",
-            "History & Society": "rgba(211, 88, 73, 0.15)",
-            "Art & Culture": "rgba(232, 184, 64, 0.15)",
-            "Philosophy & Religion": "rgba(116, 140, 105, 0.15)",
-            "Geography & Places": "rgba(197, 140, 100, 0.15)",
-            "Biography & People": "rgba(168, 120, 138, 0.15)",
-            "Other & General": "rgba(195, 174, 214, 0.15)"
-        };
-
-        // Render Legend
+        // Render Legend with Toggling
         const legendList = document.getElementById("legend-list");
         Object.entries(categoryColors).forEach(([topic, color]) => {
             const item = document.createElement("div");
             item.className = "legend-item";
+            item.style.cursor = "pointer";
             item.innerHTML = `
                 <div class="legend-color" style="background-color: ${color}"></div>
                 <span>${topic}</span>
             `;
+            item.onclick = () => {
+                if (hiddenCategories.has(topic)) {
+                    hiddenCategories.delete(topic);
+                    item.style.opacity = "1";
+                } else {
+                    hiddenCategories.add(topic);
+                    item.style.opacity = "0.3";
+                }
+                executeQuery(true);
+            };
             legendList.appendChild(item);
         });
+
+        function clearHighlights() {
+            activePath = new Set();
+            activePathLinks = new Set();
+            document.getElementById("route-result-container").style.display = "none";
+            document.getElementById("route-text-path").innerHTML = "";
+            selectedNode = null;
+            sidebar.classList.remove("active");
+            if (window.innerWidth > 768) {
+                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
+            }
+            executeQuery(true);
+        }
 
         // Initialize Canvas Components
         const container = document.getElementById("graph-container");
@@ -1329,7 +1343,7 @@ else if (typeof exports === 'object'){
         const sidebar = document.getElementById("detail-sidebar");
 
         // Global scales and parameters
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([1, 3]);
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([2, 5]);
         let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
         let maxViews = 10000000;
         let maxInDegree = 1;
@@ -1391,23 +1405,6 @@ else if (typeof exports === 'object'){
             });
         }
 
-        const zoom = d3.zoom()
-            .scaleExtent([0.02, 8])
-            .on("start", () => { isInteracting = true; })
-            .on("zoom", (event) => {
-                transform = event.transform;
-                requestDraw();
-            })
-            .on("end", () => {
-                isInteracting = false;
-                executeQuery();
-            });
-            
-        d3.select(canvas).call(zoom);
-
-        transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(0.12);
-        d3.select(canvas).call(zoom.transform, transform);
-
         function decompressDatabase() {
             const binaryString = window.atob(COMPRESSED_SQLITE_DB);
             const bytes = new Uint8Array(binaryString.length);
@@ -1431,80 +1428,90 @@ else if (typeof exports === 'object'){
         }
 
         function bootstrapVisualizer() {
-            const metaStmt = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
-            metaStmt.step();
-            const meta = metaStmt.getAsObject();
-            maxViews = meta.mv || 10000000;
-            maxInDegree = meta.md || 1;
-            const totalNodes = meta.cn;
-            metaStmt.free();
-
-            nodeRadiusScale.domain([0, maxViews]);
-            nodeOpacityScale.domain([0, maxInDegree]);
-
-            const linkMetaStmt = db.prepare("SELECT COUNT(*) as cl FROM links");
-            linkMetaStmt.step();
-            const totalLinks = linkMetaStmt.getAsObject().cl;
-            linkMetaStmt.free();
-
-            document.getElementById("stat-nodes").textContent = totalNodes.toLocaleString();
-            document.getElementById("stat-links").textContent = totalLinks.toLocaleString();
-
-            const hubStmt = db.prepare("SELECT id, inDegree FROM nodes ORDER BY inDegree DESC LIMIT 1");
-            hubStmt.step();
-            const hub = hubStmt.getAsObject();
-            document.getElementById("stat-hub").textContent = hub.id + " (" + hub.inDegree + ")";
-            hubStmt.free();
-
-            // Populate autocomplete datalist
-            const datalist = document.getElementById("article-list");
-            const allNodesStmt = db.prepare("SELECT id FROM nodes ORDER BY id ASC");
-            while (allNodesStmt.step()) {
-                const option = document.createElement("option");
-                option.value = allNodesStmt.getAsObject().id;
-                datalist.appendChild(option);
-            }
-            allNodesStmt.free();
-
-            // Populate in-memory structures for fast pathfinding & visual continuity
-            adjacencyList = new Map();
-            linkCache = [];
-            nodeMetadata = new Map();
-
-            // Cache node metadata (views, categories) AND initial coordinates
-            const metaQueryStmt = db.prepare("SELECT id, views, category, x, y FROM nodes");
-            while (metaQueryStmt.step()) {
-                const row = metaQueryStmt.getAsObject();
-                nodeMetadata.set(row.id, { views: row.views, category: row.category });
-                // Pre-populate position cache from DB so links work immediately on boot
-                if (!positionCache.has(row.id)) {
-                    positionCache.set(row.id, { x: row.x, y: row.y });
+            try {
+                // Robust metadata fetching
+                const metaStmt = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
+                if (metaStmt.step()) {
+                    const meta = metaStmt.getAsObject();
+                    maxViews = meta.mv || 10000000;
+                    maxInDegree = meta.md || 1;
+                    const totalNodesCount = meta.cn || 0;
+                    document.getElementById("stat-nodes").textContent = totalNodesCount.toLocaleString();
                 }
+                metaStmt.free();
+
+                nodeRadiusScale.domain([0, maxViews]);
+                nodeOpacityScale.domain([0, maxInDegree]);
+
+                const linkMetaStmt = db.prepare("SELECT COUNT(*) as cl FROM links");
+                if (linkMetaStmt.step()) {
+                    const totalLinksCount = linkMetaStmt.getAsObject().cl || 0;
+                    document.getElementById("stat-links").textContent = totalLinksCount.toLocaleString();
+                }
+                linkMetaStmt.free();
+
+                const hubStmt = db.prepare("SELECT id, inDegree FROM nodes ORDER BY inDegree DESC LIMIT 1");
+                if (hubStmt.step()) {
+                    const hub = hubStmt.getAsObject();
+                    document.getElementById("stat-hub").textContent = (hub.id || "-") + " (" + (hub.inDegree || 0) + ")";
+                }
+                hubStmt.free();
+
+                // Populate autocomplete datalist
+                const datalist = document.getElementById("article-list");
+                const allNodesStmt = db.prepare("SELECT id FROM nodes ORDER BY id ASC");
+                while (allNodesStmt.step()) {
+                    const option = document.createElement("option");
+                    option.value = allNodesStmt.getAsObject().id;
+                    datalist.appendChild(option);
+                }
+                allNodesStmt.free();
+
+                // Populate in-memory structures for fast pathfinding & visual continuity
+                adjacencyList = new Map();
+                linkCache = [];
+                nodeMetadata = new Map();
+
+                // Cache node metadata (views, categories) AND initial coordinates
+                const metaQueryStmt = db.prepare("SELECT id, views, category, x, y FROM nodes");
+                while (metaQueryStmt.step()) {
+                    const row = metaQueryStmt.getAsObject();
+                    nodeMetadata.set(row.id, { views: row.views, category: row.category });
+                    // Pre-populate position cache from DB so links work immediately on boot
+                    if (!positionCache.has(row.id)) {
+                        positionCache.set(row.id, { x: row.x, y: row.y });
+                    }
+                }
+                metaQueryStmt.free();
+
+                // Cache all links
+                const allLinksStmt = db.prepare("SELECT source, target FROM links");
+                while (allLinksStmt.step()) {
+                    const { source, target } = allLinksStmt.getAsObject();
+                    
+                    // For BFS Pathfinder
+                    if (!adjacencyList.has(source)) adjacencyList.set(source, []);
+                    if (!adjacencyList.has(target)) adjacencyList.set(target, []);
+                    adjacencyList.get(source).push(target);
+                    adjacencyList.get(target).push(source);
+
+                    // For Instant "Skeleton" Link drawing
+                    linkCache.push({ s: source, t: target });
+                }
+                allLinksStmt.free();
+
+                // Hide loading screen
+                const ls = document.getElementById("loading-screen");
+                if (ls) {
+                    ls.style.opacity = "0";
+                    setTimeout(() => ls.style.display = "none", 600);
+                }
+                updateHighPerfSettings();
+            } catch (e) {
+                console.error("Critical error in bootstrapVisualizer:", e);
+                const ls = document.getElementById("loading-screen");
+                if (ls) ls.innerHTML = `<div style="padding:20px; text-align:center">Error initializing Knowledge Graph.<br><small style="opacity:0.6">${e.message}</small></div>`;
             }
-            metaQueryStmt.free();
-
-            // Cache all links
-            const allLinksStmt = db.prepare("SELECT source, target FROM links");
-            while (allLinksStmt.step()) {
-                const { source, target } = allLinksStmt.getAsObject();
-                
-                // For BFS Pathfinder
-                if (!adjacencyList.has(source)) adjacencyList.set(source, []);
-                if (!adjacencyList.has(target)) adjacencyList.set(target, []);
-                adjacencyList.get(source).push(target);
-                adjacencyList.get(target).push(source);
-
-                // For Instant "Skeleton" Link drawing
-                linkCache.push({ s: source, t: target });
-            }
-            allLinksStmt.free();
-
-            // Hide loading screen
-            const ls = document.getElementById("loading-screen");
-            ls.style.opacity = "0";
-            setTimeout(() => ls.style.display = "none", 600);
-
-            updateHighPerfSettings();
         }
 
         function updateRenderingCache() {
@@ -1534,24 +1541,15 @@ else if (typeof exports === 'object'){
             const yMin = (-transform.y) / transform.k;
             const yMax = (height - transform.y) / transform.k;
 
-            const query = searchBox.value.toLowerCase().trim();
-            const category = filterCategory.value;
-            const minViews = +filterViews.value;
-            const minRef = +filterRef.value;
-
+            // Bounding box range query for nodes (indexed for instant lookup)
             let nodeSql = `
                 SELECT id, category, views, inDegree, outDegree, x, y, snippet 
                 FROM nodes 
                 WHERE x BETWEEN :xMin AND :xMax 
-                  AND y BETWEEN :yMin AND :yMax 
-                  AND views >= :minViews
-                  AND inDegree >= :minRef
+                  AND y BETWEEN :yMin AND :yMax
             `;
             const padding = isInteracting ? 100 : 300;
-            const params = { ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding, ":minViews": minViews, ":minRef": minRef };
-
-            if (category !== "all") { nodeSql += " AND category = :category"; params[":category"] = category; }
-            if (query !== "") { nodeSql += " AND id LIKE :query"; params[":query"] = `%${query}%`; }
+            const params = { ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding };
 
             const stmt = db.prepare(nodeSql);
             stmt.bind(params);
@@ -1559,6 +1557,9 @@ else if (typeof exports === 'object'){
             const nodes = [];
             while (stmt.step()) {
                 const row = stmt.getAsObject();
+                // Client-side filter for hidden categories (from legend toggles)
+                if (hiddenCategories.has(row.category)) continue;
+
                 nodes.push({ id: row.id, category: row.category, views: row.views, inDegree: row.inDegree, outDegree: row.outDegree, x: row.x, y: row.y, snippet: row.snippet });
             }
             stmt.free();
@@ -1626,7 +1627,6 @@ else if (typeof exports === 'object'){
                 simulation.stop();
                 requestDraw();
             }
-            document.getElementById("search-loader").style.display = "none";
         }
 
         function updateSimulation(visibleNodes, visibleLinks) {
@@ -1696,6 +1696,12 @@ else if (typeof exports === 'object'){
                 const tIn = tPos.x > xMin && tPos.x < xMax && tPos.y > yMin && tPos.y < yMax;
                 if (!sIn && !tIn) return;
 
+                // CATEGORY FILTER: Hide links if node category is hidden
+                const sMeta = nodeMetadata.get(sId);
+                const tMeta = nodeMetadata.get(tId);
+                if (!sMeta || !tMeta) return;
+                if (hiddenCategories.has(sMeta.category) || hiddenCategories.has(tMeta.category)) return;
+
                 // Priority 2: Focus Highlights
                 const isLinkedToFocus = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
                 if (isLinkedToFocus) {
@@ -1704,10 +1710,6 @@ else if (typeof exports === 'object'){
                 }
 
                 // Density Filter for background
-                const sMeta = nodeMetadata.get(sId);
-                const tMeta = nodeMetadata.get(tId);
-                if (!sMeta || !tMeta) return;
-                
                 const viewLimit = isMoving ? 500000 : 100000;
                 if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
 
@@ -1796,6 +1798,18 @@ else if (typeof exports === 'object'){
             ctx.restore();
         }
 
+        const zoom = d3.zoom()
+            .scaleExtent([0.02, 8])
+            .on("start", () => { isInteracting = true; })
+            .on("zoom", (event) => {
+                transform = event.transform;
+                requestDraw();
+            })
+            .on("end", () => {
+                isInteracting = false;
+                executeQuery();
+            });
+
         d3.select(canvas).on("mousemove", (event) => {
             if (!db) return;
             const transformState = d3.zoomTransform(canvas);
@@ -1865,49 +1879,27 @@ else if (typeof exports === 'object'){
         setupCollapsiblePanel("legend-panel", "legend-toggle");
 
         const searchBox = document.getElementById("search-box");
-        const filterCategory = document.getElementById("filter-category");
-        const filterViews = document.getElementById("filter-views");
-        const filterViewsVal = document.getElementById("filter-views-val");
-        const filterRef = document.getElementById("filter-ref");
-        const filterRefVal = document.getElementById("filter-ref-val");
-
-        function formatViewsCount(num) {
-            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-            if (num >= 1000) return (num / 1000).toFixed(0) + 'k';
-            return num;
-        }
-
-        function applyFilters() {
-            filterViewsVal.textContent = formatViewsCount(+filterViews.value);
-            filterRefVal.textContent = filterRef.value;
-            
-            const query = searchBox.value.toLowerCase().trim();
-            if (query.length > 0) document.getElementById("search-loader").style.display = "block";
-            
-            // Fix: Use 50ms timeout to ensure the loader paints before the heavy DB query
-            setTimeout(() => {
-                executeQuery(true); // execute immediately
-
-                // AUTO-ZOOM ONLY ON EXACT MATCH
-                if (query.length > 1) {
-                    // Find all nodes in the database that match exactly (case-insensitive)
-                    const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
-                    stmt.bind({ ":query": searchBox.value.trim() });
-                    if (stmt.step()) {
-                        const match = stmt.getAsObject();
-                        selectNode(match, false);
-                    }
-                    stmt.free();
-                }
-            }, 10);
-        }
-
-        // --- OPTIMIZED BFS ROUTE FINDER ---
         const routeStart = document.getElementById("route-start");
         const routeEnd = document.getElementById("route-end");
         const routeBtn = document.getElementById("find-route-btn");
-        let activePath = new Set(); // IDs of nodes in the path
-        let activePathLinks = new Set(); // Source-Target strings in path
+        let activePath = new Set(); 
+        let activePathLinks = new Set(); 
+
+        function handleSearch() {
+            const query = searchBox.value.trim();
+            if (query.length < 2) return;
+            
+            clearHighlights();
+            const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
+            stmt.bind({ ":query": query });
+            if (stmt.step()) {
+                const match = stmt.getAsObject();
+                selectNode(match);
+            }
+            stmt.free();
+        }
+
+        searchBox.addEventListener("input", handleSearch);
 
         async function findRoute() {
             const startId = routeStart.value.trim();
@@ -1920,9 +1912,8 @@ else if (typeof exports === 'object'){
             const loader = document.getElementById("route-loader");
             loader.style.display = "block";
 
-            // Small delay to allow loader to paint
             setTimeout(() => {
-                // High-Speed BFS Implementation using Predecessors
+                clearHighlights();
                 const queue = [startId];
                 const predecessors = new Map();
                 predecessors.set(startId, null);
@@ -1930,12 +1921,7 @@ else if (typeof exports === 'object'){
 
                 while (queue.length > 0) {
                     const node = queue.shift();
-
-                    if (node === endId) {
-                        found = true;
-                        break;
-                    }
-
+                    if (node === endId) { found = true; break; }
                     const neighbors = adjacencyList.get(node) || [];
                     for (const neighbor of neighbors) {
                         if (!predecessors.has(neighbor)) {
@@ -1943,18 +1929,13 @@ else if (typeof exports === 'object'){
                             queue.push(neighbor);
                         }
                     }
-                    
                     if (predecessors.size > 30000) break; 
                 }
 
                 if (found) {
-                    // Reconstruct path from predecessors
                     const foundPath = [];
                     let curr = endId;
-                    while (curr !== null) {
-                        foundPath.push(curr);
-                        curr = predecessors.get(curr);
-                    }
+                    while (curr !== null) { foundPath.push(curr); curr = predecessors.get(curr); }
                     foundPath.reverse();
 
                     activePath = new Set(foundPath);
@@ -1963,44 +1944,31 @@ else if (typeof exports === 'object'){
                         activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
                     }
                     
-                    // POPULATE TEXTUAL PATH
                     const container = document.getElementById("route-result-container");
                     const pathText = document.getElementById("route-text-path");
                     pathText.innerHTML = "";
                     foundPath.forEach((title, idx) => {
                         const step = document.createElement("div");
-                        step.style.cursor = "pointer";
-                        step.style.display = "flex";
-                        step.style.gap = "8px";
+                        step.style.cursor = "pointer"; step.style.display = "flex"; step.style.gap = "8px";
                         step.innerHTML = `<span style="color:var(--color-bone); opacity:0.6">${idx + 1}.</span> <span>${title}</span>`;
                         step.addEventListener("click", () => {
                             const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
                             nodeQuery.bind({ ":id": title });
-                            if (nodeQuery.step()) {
-                                const nodeRow = nodeQuery.getAsObject();
-                                selectNode(nodeRow);
-                            }
+                            if (nodeQuery.step()) selectNode(nodeQuery.getAsObject());
                             nodeQuery.free();
                         });
                         pathText.appendChild(step);
                     });
                     container.style.display = "block";
                     
-                    // Zoom to the start of the path
                     const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
                     startNodeStmt.bind({":id": startId});
-                    if (startNodeStmt.step()) {
-                        const d = startNodeStmt.getAsObject();
-                        selectNode(d);
-                    }
+                    if (startNodeStmt.step()) selectNode(startNodeStmt.getAsObject());
                     startNodeStmt.free();
-                    
                     requestDraw();
-                    console.log("Path found:", foundPath);
                 } else {
                     alert("No path found between these articles in the current dataset.");
                 }
-                
                 loader.style.display = "none";
             }, 50);
         }
@@ -2015,36 +1983,24 @@ else if (typeof exports === 'object'){
             stmt.bind({ ":focusId": d.id });
             while (stmt.step()) {
                 const row = stmt.getAsObject();
-                if (row.source === d.id) {
-                    const detailsStmt = db.prepare("SELECT category FROM nodes WHERE id = :id");
-                    detailsStmt.bind({ ":id": row.target });
-                    if (detailsStmt.step()) {
-                        const rowDetail = detailsStmt.getAsObject();
-                        neighbors.add(row.target);
-                        connectionListItems.push({id: row.target, category: rowDetail.category, type: "out"});
-                    }
-                    detailsStmt.free();
-                } else {
-                    const detailsStmt = db.prepare("SELECT category FROM nodes WHERE id = :id");
-                    detailsStmt.bind({ ":id": row.source });
-                    if (detailsStmt.step()) {
-                        const rowDetail = detailsStmt.getAsObject();
-                        neighbors.add(row.source);
-                        connectionListItems.push({id: row.source, category: rowDetail.category, type: "in"});
-                    }
-                    detailsStmt.free();
+                const neighborId = row.source === d.id ? row.target : row.source;
+                const type = row.source === d.id ? "out" : "in";
+                const detailsStmt = db.prepare("SELECT category FROM nodes WHERE id = :id");
+                detailsStmt.bind({ ":id": neighborId });
+                if (detailsStmt.step()) {
+                    connectionListItems.push({id: neighborId, category: detailsStmt.getAsObject().category, type});
                 }
+                detailsStmt.free();
             }
             stmt.free();
             if (triggerQuery) executeQuery();
+            updateRenderingCache();
             const scale = Math.max(transform.k, 0.4);
             const x = width / 2 - d.x * scale, y = height / 2 - d.y * scale;
             d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
 
-            const tagEl = document.getElementById("sidebar-tag");
-            tagEl.textContent = d.category;
-            tagEl.style.color = categoryColors[d.category] || "var(--color-ash)";
-            tagEl.style.borderColor = categoryColors[d.category] || "var(--color-graphite)";
+            document.getElementById("sidebar-tag").textContent = d.category;
+            document.getElementById("sidebar-tag").style.color = categoryColors[d.category] || "var(--color-ash)";
             document.getElementById("sidebar-title").textContent = d.id;
             document.getElementById("sidebar-views").textContent = d.views.toLocaleString();
             document.getElementById("sidebar-inbound").textContent = d.inDegree;
@@ -2053,35 +2009,23 @@ else if (typeof exports === 'object'){
             
             const connListContainer = document.getElementById("sidebar-connections");
             connListContainer.innerHTML = "";
-            if (connectionListItems.length === 0) {
-                connListContainer.innerHTML = "<li style='padding:12px; font-size:12px; color:var(--text-muted)'>No connections in crawled set.</li>";
-            } else {
-                connectionListItems.sort((a,b) => a.id.localeCompare(b.id)).forEach(conn => {
-                    const item = document.createElement("li");
-                    item.className = "connection-item";
-                    const color = categoryColors[conn.category] || "var(--color-ash)";
-                    item.innerHTML = `<div><span style="font-weight:normal; margin-right:8px; color:var(--color-bone)">➔</span><span>${conn.id}</span></div><span class="conn-cat" style="color: ${color}; border-color: ${color}; opacity: 0.85;">${conn.category}</span>`;
-                    item.addEventListener("click", () => {
-                        const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                        nodeQuery.bind({ ":id": conn.id });
-                        if (nodeQuery.step()) {
-                            const nodeRow = nodeQuery.getAsObject();
-                            selectNode({ id: nodeRow.id, category: nodeRow.category, views: nodeRow.views, inDegree: nodeRow.inDegree, outDegree: nodeRow.outDegree, x: nodeRow.x, y: nodeRow.y, snippet: nodeRow.snippet });
-                        }
-                        nodeQuery.free();
-                    });
-                    connListContainer.appendChild(item);
+            connectionListItems.sort((a,b) => a.id.localeCompare(b.id)).forEach(conn => {
+                const item = document.createElement("li");
+                item.className = "connection-item";
+                const color = categoryColors[conn.category] || "var(--color-ash)";
+                item.innerHTML = `<div><span style="font-weight:normal; margin-right:8px; color:var(--color-bone)">➔</span><span>${conn.id}</span></div><span class="conn-cat" style="color: ${color}; border-color: ${color}; opacity: 0.85;">${conn.category}</span>`;
+                item.addEventListener("click", () => {
+                    const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                    nodeQuery.bind({ ":id": conn.id });
+                    if (nodeQuery.step()) selectNode(nodeQuery.getAsObject());
+                    nodeQuery.free();
                 });
-            }
+                connListContainer.appendChild(item);
+            });
             document.getElementById("sidebar-wiki-link").href = `https://en.wikipedia.org/wiki/${encodeURIComponent(d.id.replace(/ /g, '_'))}`;
             sidebar.classList.add("active");
-            
-            // Adjust overlays for layout shift (Desktop only)
             if (window.innerWidth > 768) {
-                document.getElementById("controls-panel").style.transform = "translateX(-450px)";
-                document.getElementById("legend-panel").style.transform = "translateX(-450px)";
-                document.getElementById("controls-toggle").style.transform = "translateX(-450px)";
-                document.getElementById("legend-toggle").style.transform = "translateX(-450px)";
+                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(-450px)");
             }
         }
 
@@ -2090,128 +2034,65 @@ else if (typeof exports === 'object'){
             selectedNode = null;
             activePath = new Set();
             activePathLinks = new Set();
-            
-            // Clear textual path
             document.getElementById("route-result-container").style.display = "none";
             document.getElementById("route-text-path").innerHTML = "";
-
             executeQuery();
-
+            updateRenderingCache();
             sidebar.classList.remove("active");
             if (window.innerWidth > 768) {
-                document.getElementById("controls-panel").style.transform = "translateX(0)";
-                document.getElementById("legend-panel").style.transform = "translateX(0)";
-                document.getElementById("controls-toggle").style.transform = "translateX(0)";
-                document.getElementById("legend-toggle").style.transform = "translateX(0)";
+                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
             }
         }
 
         d3.select(canvas).on("click", (event) => {
             if (!db) return;
-            const transformState = d3.zoomTransform(canvas);
-            const mouseX = (event.offsetX - transformState.x) / transformState.k;
-            const mouseY = (event.offsetY - transformState.y) / transformState.k;
+            const tState = d3.zoomTransform(canvas);
+            const mx = (event.offsetX - tState.x) / tState.k;
+            const my = (event.offsetY - tState.y) / tState.k;
             let found = null;
             for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i];
-                const dx = d.x - mouseX, dy = d.y - mouseY;
-                const r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 12) * Math.max(r, 12)) {
-                    found = d;
-                    break;
-                }
+                const d = graphData.nodes[i], dx = d.x - mx, dy = d.y - my, r = nodeRadiusScale(d.views);
+                if (dx * dx + dy * dy < Math.max(r, 12) * Math.max(r, 12)) { found = d; break; }
             }
-            if (found) {
-                selectNode(found);
-            } else {
-                deselectNode();
-            }
+            if (found) selectNode(found); else deselectNode();
             updateRenderingCache();
         });
 
         d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
             if (!db) return null;
-            const transformState = d3.zoomTransform(canvas);
-            const mouseX = (event.sourceEvent.offsetX - transformState.x) / transformState.k;
-            const mouseY = (event.sourceEvent.offsetY - transformState.y) / transformState.k;
+            const tState = d3.zoomTransform(canvas);
+            const mx = (event.sourceEvent.offsetX - tState.x) / tState.k;
+            const my = (event.sourceEvent.offsetY - tState.y) / tState.k;
             let found = null;
             for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i];
-                const dx = d.x - mouseX, dy = d.y - mouseY;
-                const r = nodeRadiusScale(d.views);
+                const d = graphData.nodes[i], dx = d.x - mx, dy = d.y - my, r = nodeRadiusScale(d.views);
                 if (dx * dx + dy * dy < Math.max(r, 8) * Math.max(r, 8)) { found = d; break; }
             }
             return found;
-        }).on("start", dragstarted).on("drag", dragged).on("end", dragended));
-
-        function dragstarted(event) {
-            isInteracting = true;
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            event.subject.fx = event.subject.x; event.subject.fy = event.subject.y;
-        }
-        function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
-        function dragended(event) {
-            isInteracting = false;
-            if (!event.active) simulation.alphaTarget(0);
-            event.subject.fx = null; event.subject.fy = null; executeQuery();
-        }
+        }).on("start", (event) => { isInteracting = true; if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; })
+          .on("drag", (event) => { event.subject.fx = event.x; event.subject.fy = event.y; })
+          .on("end", (event) => { isInteracting = false; if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; executeQuery(); }));
 
         const sliderDensity = document.getElementById("slider-density");
-        sliderDensity.addEventListener("input", () => {
-            currentDensity = +sliderDensity.value;
-            document.getElementById("density-val").textContent = currentDensity;
-            executeQuery();
-        });
-
+        sliderDensity.addEventListener("input", () => { currentDensity = +sliderDensity.value; document.getElementById("density-val").textContent = currentDensity; executeQuery(); });
         const sliderDistance = document.getElementById("slider-distance");
-        sliderDistance.addEventListener("input", () => {
-            currentDist = +sliderDistance.value;
-            document.getElementById("dist-val").textContent = currentDist;
-            simulation.force("link").distance(currentDist);
-            simulation.alpha(0.3).restart();
-        });
+        sliderDistance.addEventListener("input", () => { currentDist = +sliderDistance.value; document.getElementById("dist-val").textContent = currentDist; simulation.force("link").distance(currentDist); simulation.alpha(0.3).restart(); });
         const sliderCharge = document.getElementById("slider-charge");
-        sliderCharge.addEventListener("input", () => {
-            currentCharge = +sliderCharge.value;
-            document.getElementById("charge-val").textContent = currentCharge;
-            simulation.force("charge").strength(currentCharge);
-            simulation.alpha(0.3).restart();
-        });
+        sliderCharge.addEventListener("input", () => { currentCharge = +sliderCharge.value; document.getElementById("charge-val").textContent = currentCharge; simulation.force("charge").strength(currentCharge); simulation.alpha(0.3).restart(); });
         const sliderCollision = document.getElementById("slider-collision");
-        sliderCollision.addEventListener("input", () => {
-            currentCollision = +sliderCollision.value;
-            document.getElementById("col-val").textContent = currentCollision;
-            if (!highPerfMode) {
-                simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16);
-                simulation.alpha(0.3).restart();
-            }
-        });
+        sliderCollision.addEventListener("input", () => { currentCollision = +sliderCollision.value; document.getElementById("col-val").textContent = currentCollision; if (!highPerfMode) simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16); simulation.alpha(0.3).restart(); });
         const sliderGravity = document.getElementById("slider-gravity");
-        sliderGravity.addEventListener("input", () => {
-            gravityStrength = +sliderGravity.value;
-            document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2);
-            simulation.alpha(0.3).restart();
-        });
+        sliderGravity.addEventListener("input", () => { gravityStrength = +sliderGravity.value; document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2); simulation.alpha(0.3).restart(); });
 
         const highPerfToggle = document.getElementById("high-perf-toggle");
         function updateHighPerfSettings() {
             highPerfMode = highPerfToggle.checked;
-            if (highPerfMode) {
-                simulation.force("collision", null);
-                simulation.alphaDecay(0.08);
-            } else {
-                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1));
-                simulation.alphaDecay(0.0228);
-            }
+            if (highPerfMode) { simulation.force("collision", null); simulation.alphaDecay(0.08); }
+            else { simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1)); simulation.alphaDecay(0.0228); }
             executeQuery();
         }
         highPerfToggle.addEventListener("change", updateHighPerfSettings);
-        window.addEventListener("resize", () => {
-            resizeCanvas();
-            simulation.force("center", d3.forceCenter(width / 2, height / 2));
-            simulation.alpha(0.1).restart();
-            requestDraw();
-        });
+        window.addEventListener("resize", () => { resizeCanvas(); simulation.force("center", d3.forceCenter(width / 2, height / 2)); simulation.alpha(0.1).restart(); requestDraw(); });
         initDatabase();
         String.prototype.strip = function() { return this.replace(/^\s+|\s+$/g, ''); };
     </script>
