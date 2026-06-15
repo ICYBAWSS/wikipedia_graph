@@ -1169,7 +1169,7 @@
         const sidebar = document.getElementById("detail-sidebar");
 
         // Global scales and parameters
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([3, 12]);
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([2, 6]);
         let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
         let maxViews = 10000000;
         let maxInDegree = 1;
@@ -1612,7 +1612,7 @@
                 const isPathNode = isPathActive && activePath.has(d.id);
                 
                 if (isHovered || isSelected || isPathNode) {
-                    ctx.fillStyle = isPathNode ? '#ffffff' : '#d35849';
+                    ctx.fillStyle = isPathNode ? '#ffffff' : '#e8b840';
                     ctx.globalAlpha = 1.0;
                 } else {
                     ctx.fillStyle = categoryColors[d.category] || "#ffffff";
@@ -1721,7 +1721,7 @@
             const query = searchBox.value.toLowerCase().trim();
             if (query.length > 0) document.getElementById("search-loader").style.display = "block";
             
-            // Fix: Use setTimeout to allow the loader to render before the blocking DB query
+            // Fix: Use 50ms timeout to ensure the loader paints before the heavy DB query
             setTimeout(() => {
                 executeQuery(true); // execute immediately
 
