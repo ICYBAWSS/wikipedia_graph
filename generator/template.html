@@ -1515,56 +1515,40 @@
             const isMoving = isInteracting;
 
             // 1. Draw Links
-            ctx.beginPath();
-            
-            // ALWAYS use linkCache for visual continuity
+            // We use two batches to prevent stroke style bleeding and fix path clearing
+            const backgroundLinks = [];
+            const highlightLinks = [];
+            const pathLinksBatch = [];
+
             linkCache.forEach(l => {
                 const sId = l.s;
                 const tId = l.t;
 
-                // Check if this link is part of the path
-                const isPathLink = isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`));
-
-                if (isPathLink) {
-                    ctx.save(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4 / transform.k;
-                    ctx.beginPath();
-                    const sPos = positionCache.get(sId);
-                    const tPos = positionCache.get(tId);
-                    if (sPos && tPos) {
-                        ctx.moveTo(sPos.x, sPos.y); ctx.lineTo(tPos.x, tPos.y);
-                        ctx.stroke();
-                    }
-                    ctx.restore();
+                // Priority 1: Path Links
+                if (isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`))) {
+                    pathLinksBatch.push({ sId, tId });
                     return;
                 }
 
-                if (isPathActive) return; // Isolate path
+                if (isPathActive) return; // Isolate path view
 
                 const sPos = positionCache.get(sId);
                 const tPos = positionCache.get(tId);
                 if (!sPos || !tPos) return;
 
-                // Viewport culling (fast)
+                // Viewport culling
                 const sIn = sPos.x > xMin && sPos.x < xMax && sPos.y > yMin && sPos.y < yMax;
                 const tIn = tPos.x > xMin && tPos.x < xMax && tPos.y > yMin && tPos.y < yMax;
                 if (!sIn && !tIn) return;
 
-                // NEIGHBOR HIGHLIGHTING LOGIC
+                // Priority 2: Focus Highlights
                 const isLinkedToFocus = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
-
                 if (isLinkedToFocus) {
-                    ctx.save();
-                    ctx.strokeStyle = "#f6f5f2";
-                    ctx.lineWidth = 1.5 / transform.k;
-                    ctx.beginPath();
-                    ctx.moveTo(sPos.x, sPos.y);
-                    ctx.lineTo(tPos.x, tPos.y);
-                    ctx.stroke();
-                    ctx.restore();
+                    highlightLinks.push({ sPos, tPos });
                     return;
                 }
 
-                // DENSITY FILTER: Limit visible connections for background links
+                // Density Filter for background
                 const sMeta = nodeMetadata.get(sId);
                 const tMeta = nodeMetadata.get(tId);
                 if (!sMeta || !tMeta) return;
@@ -1572,14 +1556,48 @@
                 const viewLimit = isMoving ? 500000 : 100000;
                 if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
 
-                ctx.moveTo(sPos.x, sPos.y);
-                ctx.lineTo(tPos.x, tPos.y);
+                backgroundLinks.push({ sPos, tPos });
             });
 
-            // Draw batch of regular background links
-            ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.02 : 0.06})`; 
-            ctx.lineWidth = 0.5 / transform.k;
-            ctx.stroke();
+            // A. Draw Background Links
+            if (backgroundLinks.length > 0) {
+                ctx.beginPath();
+                ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.015 : 0.05})`; 
+                ctx.lineWidth = 0.5 / transform.k;
+                backgroundLinks.forEach(l => {
+                    ctx.moveTo(l.sPos.x, l.sPos.y);
+                    ctx.lineTo(l.tPos.x, l.tPos.y);
+                });
+                ctx.stroke();
+            }
+
+            // B. Draw Highlighted Links (Focused neighbors)
+            if (highlightLinks.length > 0) {
+                ctx.beginPath();
+                ctx.strokeStyle = "#f6f5f2";
+                ctx.lineWidth = 1.5 / transform.k;
+                highlightLinks.forEach(l => {
+                    ctx.moveTo(l.sPos.x, l.sPos.y);
+                    ctx.lineTo(l.tPos.x, l.tPos.y);
+                });
+                ctx.stroke();
+            }
+
+            // C. Draw Path Links (Extreme priority)
+            if (pathLinksBatch.length > 0) {
+                ctx.beginPath();
+                ctx.strokeStyle = "#ffffff";
+                ctx.lineWidth = 4 / transform.k;
+                pathLinksBatch.forEach(l => {
+                    const sPos = positionCache.get(l.sId);
+                    const tPos = positionCache.get(l.tId);
+                    if (sPos && tPos) {
+                        ctx.moveTo(sPos.x, sPos.y);
+                        ctx.lineTo(tPos.x, tPos.y);
+                    }
+                });
+                ctx.stroke();
+            }
 
             // 2. Draw Nodes
             graphData.nodes.forEach(d => {
