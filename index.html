@@ -1732,30 +1732,36 @@ else if (typeof exports === 'object'){
                 const tIn = tPos.x > xMin && tPos.x < xMax && tPos.y > yMin && tPos.y < yMax;
                 if (!sIn && !tIn) return;
 
-                // DENSITY FILTER: Limit visible connections for clarity and FPS
-                // We use views as a rank proxy to show the most important connections first
+                // NEIGHBOR HIGHLIGHTING LOGIC
+                const isLinkedToFocus = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
+
+                if (isLinkedToFocus) {
+                    ctx.save();
+                    ctx.strokeStyle = "#f6f5f2";
+                    ctx.lineWidth = 1.5 / transform.k;
+                    ctx.beginPath();
+                    ctx.moveTo(sPos.x, sPos.y);
+                    ctx.lineTo(tPos.x, tPos.y);
+                    ctx.stroke();
+                    ctx.restore();
+                    return;
+                }
+
+                // DENSITY FILTER: Limit visible connections for background links
                 const sMeta = nodeMetadata.get(sId);
                 const tMeta = nodeMetadata.get(tId);
                 if (!sMeta || !tMeta) return;
                 
-                // Show more links if focused, else apply density slider
-                const isFocused = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
-                if (!isFocused) {
-                    // Logic: Show fewer links while moving, or based on density slider
-                    const viewLimit = isMoving ? 500000 : 100000;
-                    if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
-                }
+                const viewLimit = isMoving ? 500000 : 100000;
+                if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
 
                 ctx.moveTo(sPos.x, sPos.y);
                 ctx.lineTo(tPos.x, tPos.y);
             });
 
-            if (activeFocusNode) {
-                ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5 / transform.k;
-            } else {
-                ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.02 : 0.06})`; 
-                ctx.lineWidth = 0.5 / transform.k;
-            }
+            // Draw batch of regular background links
+            ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.02 : 0.06})`; 
+            ctx.lineWidth = 0.5 / transform.k;
             ctx.stroke();
 
             // 2. Draw Nodes
@@ -1775,7 +1781,8 @@ else if (typeof exports === 'object'){
                     ctx.globalAlpha = 1.0;
                 } else {
                     ctx.fillStyle = categoryColors[d.category] || "#ffffff";
-                    ctx.globalAlpha = (activeFocusNode || isPathActive) ? (activeFocusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.08) : nodeOpacityScale(d.inDegree);
+                    // Dim background nodes when focus or path is active, but don't hide them
+                    ctx.globalAlpha = (activeFocusNode || isPathActive) ? (activeFocusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.15) : nodeOpacityScale(d.inDegree);
                 }
                 ctx.fill();
 
