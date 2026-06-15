@@ -1285,6 +1285,12 @@ else if (typeof exports === 'object'){
         let positionCache = new Map(); // Store stabilized coordinates
         let linkCache = []; // Store ALL links for instant "skeleton" view
         let nodeMetadata = new Map(); // Cache views/categories for all nodes
+        
+        // RENDERING CACHE (Zero-Allocation Loop)
+        let activeNodeMap = new Map();
+        let activeFocusNeighbors = new Set();
+        let activeFocusNode = null;
+
         let selectedNode = null;
         let hoveredNode = null;
         let isInteracting = false;
@@ -1530,6 +1536,19 @@ else if (typeof exports === 'object'){
             updateHighPerfSettings();
         }
 
+        function updateRenderingCache() {
+            activeNodeMap = new Map(graphData.nodes.map(n => [n.id, n]));
+            activeFocusNode = selectedNode || (!isInteracting ? hoveredNode : null);
+            activeFocusNeighbors.clear();
+            
+            if (activeFocusNode) {
+                activeFocusNeighbors.add(activeFocusNode.id);
+                // Use adjacency list for instant neighbor lookup instead of iterating links
+                const neighbors = adjacencyList.get(activeFocusNode.id) || [];
+                neighbors.forEach(id => activeFocusNeighbors.add(id));
+            }
+        }
+
         function executeQuery(immediate = false) {
             if (!db) return;
 
@@ -1629,6 +1648,7 @@ else if (typeof exports === 'object'){
             }
 
             graphData = { nodes, links };
+            updateRenderingCache();
             updateSimulation(nodes, links);
 
             if (highPerfMode && isInteracting) {
@@ -1674,55 +1694,48 @@ else if (typeof exports === 'object'){
             const yMin = (-transform.y) / transform.k;
             const yMax = (height - transform.y) / transform.k;
 
-            const nodeMap = new Map(graphData.nodes.map(n => [n.id, n]));
-            const focusNode = selectedNode || (!isInteracting ? hoveredNode : null);
-            const focusNeighbors = new Set();
-            if (focusNode) {
-                focusNeighbors.add(focusNode.id);
-                graphData.links.forEach(l => {
-                    const sId = typeof l.source === "object" ? l.source.id : l.source;
-                    const tId = typeof l.target === "object" ? l.target.id : l.target;
-                    if (sId === focusNode.id) focusNeighbors.add(tId);
-                    if (tId === focusNode.id) focusNeighbors.add(sId);
-                });
-            }
+            const isPathActive = activePath.size > 0;
+            const showSkeleton = highPerfMode && isInteracting;
 
             // 1. Draw Links
             ctx.beginPath();
-            
-            // LOGIC: Use linkCache for instant feedback during interaction, else use viewport links
-            const currentLinks = (highPerfMode && isInteracting) ? linkCache : graphData.links;
+            const currentLinks = showSkeleton ? linkCache : graphData.links;
 
             currentLinks.forEach(l => {
-                const sId = typeof l.source === "object" ? l.source.id : (l.s || l.source);
-                const tId = typeof l.target === "object" ? l.target.id : (l.t || l.target);
+                const sId = l.s || (typeof l.source === "object" ? l.source.id : l.source);
+                const tId = l.t || (typeof l.target === "object" ? l.target.id : l.target);
 
-                const sourceNode = nodeMap.get(sId) || positionCache.get(sId);
-                const targetNode = nodeMap.get(tId) || positionCache.get(tId);
-                if (!sourceNode || !targetNode) return;
-
-                const isPathLink = activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`);
+                // Check if this link is part of the path
+                const isPathLink = isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`));
 
                 if (isPathLink) {
                     ctx.save(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4 / transform.k;
-                    ctx.beginPath(); ctx.moveTo(sourceNode.x, sourceNode.y); ctx.lineTo(targetNode.x, targetNode.y);
-                    ctx.stroke(); ctx.restore();
+                    ctx.beginPath();
+                    const sPos = activeNodeMap.get(sId) || positionCache.get(sId);
+                    const tPos = activeNodeMap.get(tId) || positionCache.get(tId);
+                    if (sPos && tPos) {
+                        ctx.moveTo(sPos.x, sPos.y); ctx.lineTo(tPos.x, tPos.y);
+                        ctx.stroke();
+                    }
+                    ctx.restore();
                     return;
                 }
 
-                // If a path is active, hide everything else
-                if (activePath.size > 0) return;
+                if (isPathActive) return; // Isolate path
 
-                // PERFORMANCE: During interaction, only draw "skeleton" (links between prominent nodes)
-                if (highPerfMode && isInteracting) {
+                if (showSkeleton) {
                     const sMeta = nodeMetadata.get(sId);
                     const tMeta = nodeMetadata.get(tId);
                     if (!sMeta || !tMeta || (sMeta.views < 100000 && tMeta.views < 100000)) return;
                 }
 
-                if (focusNode && sId !== focusNode.id && tId !== focusNode.id) return;
+                if (activeFocusNode && sId !== activeFocusNode.id && tId !== activeFocusNode.id) return;
+
+                const sourceNode = activeNodeMap.get(sId) || positionCache.get(sId);
+                const targetNode = activeNodeMap.get(tId) || positionCache.get(tId);
+                if (!sourceNode || !targetNode) return;
                 
-                // Viewport culling for speed
+                // Viewport culling
                 if (sourceNode.x < xMin || sourceNode.x > xMax || sourceNode.y < yMin || sourceNode.y > yMax) {
                     if (targetNode.x < xMin || targetNode.x > xMax || targetNode.y < yMin || targetNode.y > yMax) return;
                 }
@@ -1731,16 +1744,15 @@ else if (typeof exports === 'object'){
                 ctx.lineTo(targetNode.x, targetNode.y);
             });
 
-            if (focusNode) {
+            if (activeFocusNode) {
                 ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5 / transform.k;
             } else {
-                const opacity = (highPerfMode && isInteracting) ? 0.02 : 0.08;
-                ctx.strokeStyle = `rgba(214, 210, 202, ${opacity})`; 
+                ctx.strokeStyle = `rgba(214, 210, 202, ${showSkeleton ? 0.02 : 0.08})`; 
                 ctx.lineWidth = 0.6 / transform.k;
             }
             ctx.stroke();
-            ctx.globalAlpha = 1.0;
 
+            // 2. Draw Nodes
             graphData.nodes.forEach(d => {
                 const r = nodeRadiusScale(d.views);
                 if (isInteracting && transform.k < 0.1 && r * transform.k < 0.5) return;
@@ -1750,16 +1762,14 @@ else if (typeof exports === 'object'){
                 ctx.arc(d.x, d.y, r, 0, 2 * Math.PI);
                 const isHovered = hoveredNode === d;
                 const isSelected = selectedNode === d;
-                const isPathNode = activePath.has(d.id);
+                const isPathNode = isPathActive && activePath.has(d.id);
                 
                 if (isHovered || isSelected || isPathNode) {
-                    const gradient = ctx.createLinearGradient(d.x - r, d.y - r, d.x + r, d.y + r);
-                    gradient.addColorStop(0, isPathNode ? '#ffffff' : '#d35849'); 
-                    gradient.addColorStop(1, isPathNode ? '#f6f5f2' : '#588fa8');
-                    ctx.fillStyle = gradient; ctx.globalAlpha = 1.0;
+                    ctx.fillStyle = isPathNode ? '#ffffff' : '#d35849';
+                    ctx.globalAlpha = 1.0;
                 } else {
                     ctx.fillStyle = categoryColors[d.category] || "#ffffff";
-                    ctx.globalAlpha = (focusNode || activePath.size > 0) ? (focusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.08) : nodeOpacityScale(d.inDegree);
+                    ctx.globalAlpha = (activeFocusNode || isPathActive) ? (activeFocusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.08) : nodeOpacityScale(d.inDegree);
                 }
                 ctx.fill();
 
@@ -1790,7 +1800,9 @@ else if (typeof exports === 'object'){
                 }
             }
             if (found !== hoveredNode) {
-                hoveredNode = found; requestDraw();
+                hoveredNode = found; 
+                updateRenderingCache();
+                requestDraw();
                 if (hoveredNode) {
                     tooltip.style.opacity = 1;
                     document.getElementById("tt-title").textContent = hoveredNode.id;
@@ -1805,7 +1817,12 @@ else if (typeof exports === 'object'){
         });
 
         d3.select(canvas).on("mouseout", () => {
-            if (hoveredNode) { hoveredNode = null; tooltip.style.opacity = 0; requestDraw(); }
+            if (hoveredNode) { 
+                hoveredNode = null; 
+                updateRenderingCache();
+                tooltip.style.opacity = 0; 
+                requestDraw(); 
+            }
         });
 
         document.getElementById("sidebar-close").addEventListener("click", () => deselectNode());
@@ -2085,6 +2102,7 @@ else if (typeof exports === 'object'){
             } else {
                 deselectNode();
             }
+            updateRenderingCache();
         });
 
         d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
