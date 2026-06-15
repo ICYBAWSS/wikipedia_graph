@@ -1917,19 +1917,22 @@ else if (typeof exports === 'object'){
             const query = searchBox.value.toLowerCase().trim();
             if (query.length > 0) document.getElementById("search-loader").style.display = "block";
             
-            executeQuery(true); // execute immediately
+            // Fix: Use setTimeout to allow the loader to render before the blocking DB query
+            setTimeout(() => {
+                executeQuery(true); // execute immediately
 
-            // AUTO-ZOOM ONLY ON EXACT MATCH
-            if (query.length > 1) {
-                // Find all nodes in the database that match exactly (case-insensitive)
-                const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
-                stmt.bind({ ":query": searchBox.value.trim() });
-                if (stmt.step()) {
-                    const match = stmt.getAsObject();
-                    selectNode(match, false);
+                // AUTO-ZOOM ONLY ON EXACT MATCH
+                if (query.length > 1) {
+                    // Find all nodes in the database that match exactly (case-insensitive)
+                    const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
+                    stmt.bind({ ":query": searchBox.value.trim() });
+                    if (stmt.step()) {
+                        const match = stmt.getAsObject();
+                        selectNode(match, false);
+                    }
+                    stmt.free();
                 }
-                stmt.free();
-            }
+            }, 10);
         }
 
         // --- OPTIMIZED BFS ROUTE FINDER ---
