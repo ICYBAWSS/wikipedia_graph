@@ -1253,551 +1253,57 @@ else if (typeof exports === 'object'){
 
     <!-- Visualizer Script -->
     <script>
-        let highPerfMode = true;
+        // --- GLOBAL STATE ---
         let db = null;
-        let graphData = { nodes: [], links: [] }; // currently loaded viewport data
-        let adjacencyList = new Map(); // In-memory map for fast pathfinding
-        let positionCache = new Map(); // Store stabilized coordinates
-        let linkCache = []; // Store ALL links for instant "skeleton" view
-        let nodeMetadata = new Map(); // Cache views/categories for all nodes
+        let graphData = { nodes: [], links: [] };
+        let transform = d3.zoomIdentity;
+        let positionCache = new Map();
+        let nodeMetadata = new Map();
+        let linkCache = [];
+        let adjacencyList = new Map();
         
-        // RENDERING CACHE (Zero-Allocation Loop)
         let activeNodeMap = new Map();
         let activeFocusNeighbors = new Set();
         let activeFocusNode = null;
-        let hiddenCategories = new Set(); // Categories currently toggled off
+        let hiddenCategories = new Set();
+        let activePath = new Set();
+        let activePathLinks = new Set();
 
         let selectedNode = null;
         let hoveredNode = null;
         let isInteracting = false;
-        let transform = d3.zoomIdentity;
-
-        // Topic Color mapping helper - Cecilia May Primary Theme warm palette
-        const categoryColors = {
-            "Biography & People": "#a8788a",     // Muted rose / plum
-            "Science & Technology": "#588fa8",   // Warm slate blue
-            "History & Society": "#d35849",      // Warm terra cotta red
-            "Art & Culture": "#e8b840",          // Warm golden yellow
-            "Philosophy & Religion": "#748c69",  // Muted warm sage green
-            "Geography & Places": "#c58c64",     // Muted clay orange
-            "Other & General": "#c3aed6"         // Bright lavender
-        };
-
-        // Render Legend with Toggling
-        const legendList = document.getElementById("legend-list");
-        Object.entries(categoryColors).forEach(([topic, color]) => {
-            const item = document.createElement("div");
-            item.className = "legend-item";
-            item.style.cursor = "pointer";
-            item.innerHTML = `
-                <div class="legend-color" style="background-color: ${color}"></div>
-                <span>${topic}</span>
-            `;
-            item.onclick = () => {
-                if (hiddenCategories.has(topic)) {
-                    hiddenCategories.delete(topic);
-                    item.style.opacity = "1";
-                } else {
-                    hiddenCategories.add(topic);
-                    item.style.opacity = "0.3";
-                }
-                executeQuery(true);
-            };
-            legendList.appendChild(item);
-        });
-
-        function clearHighlights() {
-            activePath = new Set();
-            activePathLinks = new Set();
-            document.getElementById("route-result-container").style.display = "none";
-            document.getElementById("route-text-path").innerHTML = "";
-            selectedNode = null;
-            sidebar.classList.remove("active");
-            if (window.innerWidth > 768) {
-                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
-            }
-            executeQuery(true);
-        }
-
-        // Initialize Canvas Components
-        const container = document.getElementById("graph-container");
-        const canvas = document.getElementById("graph-canvas");
-        const ctx = canvas.getContext("2d");
-        const dpr = window.devicePixelRatio || 1;
-        let width = container.clientWidth;
-        let height = container.clientHeight;
-
-        function resizeCanvas() {
-            width = container.clientWidth;
-            height = container.clientHeight;
-            canvas.width = width * dpr;
-            canvas.height = height * dpr;
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.scale(dpr, dpr);
-            canvas.style.width = width + "px";
-            canvas.style.height = height + "px";
-        }
-        resizeCanvas();
-
-        const tooltip = document.getElementById("tooltip");
-        const sidebar = document.getElementById("detail-sidebar");
-
-        // Global scales and parameters
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([2, 5]);
-        let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
-        let maxViews = 10000000;
-        let maxInDegree = 1;
-
-        // Force Simulation setup
-        let currentDist = 120;
-        let currentCharge = -200;
-        let currentCollision = 20;
-        let currentDensity = 10;
-        let gravityStrength = 0.05;
-
-        // Custom gravity force between connected nodes: F = G * m1 * m2 / r^2
-        function gravityForce(alpha) {
-            const minDistance2 = 100;
-            graphData.links.forEach(l => {
-                const source = l.source;
-                const target = l.target;
-                if (typeof source !== "object" || typeof target !== "object") return;
-                const dx = target.x - source.x;
-                const dy = target.y - source.y;
-                const r2 = dx * dx + dy * dy;
-                const r = Math.sqrt(r2);
-                if (r === 0) return;
-                const m1 = source.inDegree || 1;
-                const m2 = target.inDegree || 1;
-                const forceMagnitude = gravityStrength * (m1 * m2) / Math.max(r2, minDistance2);
-                const fx = forceMagnitude * (dx / r) * alpha;
-                const fy = forceMagnitude * (dy / r) * alpha;
-                source.vx += fx;
-                source.vy += fy;
-                target.vx -= fx;
-                target.vy -= fy;
-            });
-        }
-
-        const simulation = d3.forceSimulation([])
-            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(0.05))
-            .force("charge", d3.forceManyBody().strength(currentCharge))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1))
-            .force("gravity", gravityForce);
-
-        simulation.on("tick", () => {
-            simulation.nodes().forEach(n => {
-                positionCache.set(n.id, { x: n.x, y: n.y });
-            });
-            requestDraw();
-        });
-
         let rafPending = false;
         let queryTimeout = null;
+        let highPerfMode = true;
 
-        function requestDraw() {
-            if (rafPending) return;
-            rafPending = true;
-            requestAnimationFrame(() => {
-                draw();
-                rafPending = false;
-            });
-        }
+        const categoryColors = {
+            "Biography & People": "#a8788a",
+            "Science & Technology": "#588fa8",
+            "History & Society": "#d35849",
+            "Art & Culture": "#e8b840",
+            "Philosophy & Religion": "#748c69",
+            "Geography & Places": "#c58c64",
+            "Other & General": "#c3aed6"
+        };
 
-        function decompressDatabase() {
-            const binaryString = window.atob(COMPRESSED_SQLITE_DB);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            return pako.ungzip(bytes);
-        }
+        // --- DOM REFERENCES ---
+        const canvas = document.getElementById("graph-canvas");
+        const ctx = canvas.getContext("2d");
+        const container = document.getElementById("graph-container");
+        const searchBox = document.getElementById("search-box");
+        const sidebar = document.getElementById("detail-sidebar");
+        const tooltip = document.getElementById("tooltip");
+        const routeStart = document.getElementById("route-start");
+        const routeEnd = document.getElementById("route-end");
+        const routeBtn = document.getElementById("find-route-btn");
 
-        function initDatabase() {
-            const wasmBinaryString = window.atob(SQL_WASM_BASE64);
-            const wasmBytes = new Uint8Array(wasmBinaryString.length);
-            for (let i = 0; i < wasmBinaryString.length; i++) {
-                wasmBytes[i] = wasmBinaryString.charCodeAt(i);
-            }
-            initSqlJs({ wasmBinary: wasmBytes }).then(SQL => {
-                const dbData = decompressDatabase();
-                db = new SQL.Database(dbData);
-                bootstrapVisualizer();
-            });
-        }
+        let width, height, dpr = window.devicePixelRatio || 1;
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([2, 5]);
+        let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
+        let maxViews = 10000000, maxInDegree = 1;
+        let currentDist = 120, currentCharge = -200, currentCollision = 20, currentDensity = 10, gravityStrength = 0.05;
 
-        function bootstrapVisualizer() {
-            try {
-                // Robust metadata fetching
-                const metaStmt = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
-                if (metaStmt.step()) {
-                    const meta = metaStmt.getAsObject();
-                    maxViews = meta.mv || 10000000;
-                    maxInDegree = meta.md || 1;
-                    const totalNodesCount = meta.cn || 0;
-                    document.getElementById("stat-nodes").textContent = totalNodesCount.toLocaleString();
-                }
-                metaStmt.free();
-
-                nodeRadiusScale.domain([0, maxViews]);
-                nodeOpacityScale.domain([0, maxInDegree]);
-
-                const linkMetaStmt = db.prepare("SELECT COUNT(*) as cl FROM links");
-                if (linkMetaStmt.step()) {
-                    const totalLinksCount = linkMetaStmt.getAsObject().cl || 0;
-                    document.getElementById("stat-links").textContent = totalLinksCount.toLocaleString();
-                }
-                linkMetaStmt.free();
-
-                const hubStmt = db.prepare("SELECT id, inDegree FROM nodes ORDER BY inDegree DESC LIMIT 1");
-                if (hubStmt.step()) {
-                    const hub = hubStmt.getAsObject();
-                    document.getElementById("stat-hub").textContent = (hub.id || "-") + " (" + (hub.inDegree || 0) + ")";
-                }
-                hubStmt.free();
-
-                // Populate autocomplete datalist
-                const datalist = document.getElementById("article-list");
-                const allNodesStmt = db.prepare("SELECT id FROM nodes ORDER BY id ASC");
-                while (allNodesStmt.step()) {
-                    const option = document.createElement("option");
-                    option.value = allNodesStmt.getAsObject().id;
-                    datalist.appendChild(option);
-                }
-                allNodesStmt.free();
-
-                // Populate in-memory structures for fast pathfinding & visual continuity
-                adjacencyList = new Map();
-                linkCache = [];
-                nodeMetadata = new Map();
-
-                // Cache node metadata (views, categories) AND initial coordinates
-                const metaQueryStmt = db.prepare("SELECT id, views, category, x, y FROM nodes");
-                while (metaQueryStmt.step()) {
-                    const row = metaQueryStmt.getAsObject();
-                    nodeMetadata.set(row.id, { views: row.views, category: row.category });
-                    // Pre-populate position cache from DB so links work immediately on boot
-                    if (!positionCache.has(row.id)) {
-                        positionCache.set(row.id, { x: row.x, y: row.y });
-                    }
-                }
-                metaQueryStmt.free();
-
-                // Cache all links
-                const allLinksStmt = db.prepare("SELECT source, target FROM links");
-                while (allLinksStmt.step()) {
-                    const { source, target } = allLinksStmt.getAsObject();
-                    
-                    // For BFS Pathfinder
-                    if (!adjacencyList.has(source)) adjacencyList.set(source, []);
-                    if (!adjacencyList.has(target)) adjacencyList.set(target, []);
-                    adjacencyList.get(source).push(target);
-                    adjacencyList.get(target).push(source);
-
-                    // For Instant "Skeleton" Link drawing
-                    linkCache.push({ s: source, t: target });
-                }
-                allLinksStmt.free();
-
-                // Hide loading screen
-                const ls = document.getElementById("loading-screen");
-                if (ls) {
-                    ls.style.opacity = "0";
-                    setTimeout(() => ls.style.display = "none", 600);
-                }
-                updateHighPerfSettings();
-            } catch (e) {
-                console.error("Critical error in bootstrapVisualizer:", e);
-                const ls = document.getElementById("loading-screen");
-                if (ls) ls.innerHTML = `<div style="padding:20px; text-align:center">Error initializing Knowledge Graph.<br><small style="opacity:0.6">${e.message}</small></div>`;
-            }
-        }
-
-        function updateRenderingCache() {
-            activeNodeMap = new Map(graphData.nodes.map(n => [n.id, n]));
-            activeFocusNode = selectedNode || (!isInteracting ? hoveredNode : null);
-            activeFocusNeighbors.clear();
-            
-            if (activeFocusNode) {
-                activeFocusNeighbors.add(activeFocusNode.id);
-                // Use adjacency list for instant neighbor lookup instead of iterating links
-                const neighbors = adjacencyList.get(activeFocusNode.id) || [];
-                neighbors.forEach(id => activeFocusNeighbors.add(id));
-            }
-        }
-
-        function executeQuery(immediate = false) {
-            if (!db) return;
-
-            if (!immediate && isInteracting) {
-                if (queryTimeout) clearTimeout(queryTimeout);
-                queryTimeout = setTimeout(() => executeQuery(true), 150);
-                return;
-            }
-
-            const xMin = (-transform.x) / transform.k;
-            const xMax = (width - transform.x) / transform.k;
-            const yMin = (-transform.y) / transform.k;
-            const yMax = (height - transform.y) / transform.k;
-
-            // Bounding box range query for nodes (indexed for instant lookup)
-            let nodeSql = `
-                SELECT id, category, views, inDegree, outDegree, x, y, snippet 
-                FROM nodes 
-                WHERE x BETWEEN :xMin AND :xMax 
-                  AND y BETWEEN :yMin AND :yMax
-            `;
-            const padding = isInteracting ? 100 : 300;
-            const params = { ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding };
-
-            const stmt = db.prepare(nodeSql);
-            stmt.bind(params);
-
-            const nodes = [];
-            while (stmt.step()) {
-                const row = stmt.getAsObject();
-                // Client-side filter for hidden categories (from legend toggles)
-                if (hiddenCategories.has(row.category)) continue;
-
-                nodes.push({ id: row.id, category: row.category, views: row.views, inDegree: row.inDegree, outDegree: row.outDegree, x: row.x, y: row.y, snippet: row.snippet });
-            }
-            stmt.free();
-
-            const links = [];
-            if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
-                // Query path links separately if they exist to ensure they are ALWAYS drawn
-                if (activePathLinks.size > 0) {
-                    const pathLinkSql = `
-                        SELECT l.source, l.target FROM links l
-                        JOIN nodes n1 ON l.source = n1.id
-                        JOIN nodes n2 ON l.target = n2.id
-                        WHERE (n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax)
-                           OR (n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax)
-                    `;
-                    const pathStmt = db.prepare(pathLinkSql);
-                    pathStmt.bind({ ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding });
-                    while (pathStmt.step()) {
-                        const row = pathStmt.getAsObject();
-                        if (activePathLinks.has(`${row.source}->${row.target}`) || activePathLinks.has(`${row.target}->${row.source}`)) {
-                            links.push({ source: row.source, target: row.target });
-                        }
-                    }
-                    pathStmt.free();
-                }
-
-                // Use a Rank-based query to keep only the top N regular links per node
-                const linkSql = `
-                    WITH RankedLinks AS (
-                        SELECT l.source, l.target,
-                        ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank
-                        FROM links l
-                        JOIN nodes n1 ON l.source = n1.id
-                        JOIN nodes n2 ON l.target = n2.id
-                        WHERE n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax
-                          AND n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax
-                    )
-                    SELECT source, target FROM RankedLinks WHERE rank <= :density
-                `;
-                const linkStmt = db.prepare(linkSql);
-                linkStmt.bind({ 
-                    ":xMin": xMin - padding, 
-                    ":xMax": xMax + padding, 
-                    ":yMin": yMin - padding, 
-                    ":yMax": yMax + padding,
-                    ":density": currentDensity
-                });
-                while (linkStmt.step()) {
-                    const row = linkStmt.getAsObject();
-                    // Avoid duplicates if a path link was already added
-                    const key1 = `${row.source}->${row.target}`;
-                    const key2 = `${row.target}->${row.source}`;
-                    if (!activePathLinks.has(key1) && !activePathLinks.has(key2)) {
-                        links.push({ source: row.source, target: row.target });
-                    }
-                }
-                linkStmt.free();
-            }
-
-            graphData = { nodes, links };
-            updateRenderingCache();
-            updateSimulation(nodes, links);
-
-            if (highPerfMode && isInteracting) {
-                simulation.stop();
-                requestDraw();
-            }
-        }
-
-        function updateSimulation(visibleNodes, visibleLinks) {
-            visibleNodes.forEach(n => {
-                const cached = positionCache.get(n.id);
-                if (cached) {
-                    n.x = cached.x;
-                    n.y = cached.y;
-                    // If we've panned away and back, keep them "fixed" to prevent jumpy reloads
-                    if (highPerfMode) {
-                        n.fx = cached.x;
-                        n.fy = cached.y;
-                    }
-                }
-            });
-
-            simulation.nodes(visibleNodes);
-            simulation.force("link").links(visibleLinks);
-
-            if (!isInteracting) {
-                // If High Perf is on and we have cached positions, don't restart simulation
-                const allCached = visibleNodes.every(n => positionCache.has(n.id));
-                if (!(highPerfMode && allCached)) {
-                    simulation.alpha(0.05).restart();
-                }
-            }
-        }
-
-        function draw() {
-            ctx.clearRect(0, 0, width, height);
-            ctx.save();
-            ctx.translate(transform.x, transform.y);
-            ctx.scale(transform.k, transform.k);
-
-            const xMin = (-transform.x) / transform.k;
-            const xMax = (width - transform.x) / transform.k;
-            const yMin = (-transform.y) / transform.k;
-            const yMax = (height - transform.y) / transform.k;
-
-            const isPathActive = activePath.size > 0;
-            const isMoving = isInteracting;
-
-            // 1. Draw Links
-            // We use two batches to prevent stroke style bleeding and fix path clearing
-            const backgroundLinks = [];
-            const highlightLinks = [];
-            const pathLinksBatch = [];
-
-            linkCache.forEach(l => {
-                const sId = l.s;
-                const tId = l.t;
-
-                // Priority 1: Path Links
-                if (isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`))) {
-                    pathLinksBatch.push({ sId, tId });
-                    return;
-                }
-
-                if (isPathActive) return; // Isolate path view
-
-                const sPos = positionCache.get(sId);
-                const tPos = positionCache.get(tId);
-                if (!sPos || !tPos) return;
-
-                // Viewport culling
-                const sIn = sPos.x > xMin && sPos.x < xMax && sPos.y > yMin && sPos.y < yMax;
-                const tIn = tPos.x > xMin && tPos.x < xMax && tPos.y > yMin && tPos.y < yMax;
-                if (!sIn && !tIn) return;
-
-                // CATEGORY FILTER: Hide links if node category is hidden
-                const sMeta = nodeMetadata.get(sId);
-                const tMeta = nodeMetadata.get(tId);
-                if (!sMeta || !tMeta) return;
-                if (hiddenCategories.has(sMeta.category) || hiddenCategories.has(tMeta.category)) return;
-
-                // Priority 2: Focus Highlights
-                const isLinkedToFocus = activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id);
-                if (isLinkedToFocus) {
-                    highlightLinks.push({ sPos, tPos });
-                    return;
-                }
-
-                // Density Filter for background
-                const viewLimit = isMoving ? 500000 : 100000;
-                if (sMeta.views < viewLimit && tMeta.views < viewLimit) return;
-
-                backgroundLinks.push({ sPos, tPos });
-            });
-
-            // A. Draw Background Links
-            if (backgroundLinks.length > 0) {
-                ctx.beginPath();
-                ctx.strokeStyle = `rgba(214, 210, 202, ${isMoving ? 0.015 : 0.05})`; 
-                ctx.lineWidth = 0.5 / transform.k;
-                backgroundLinks.forEach(l => {
-                    ctx.moveTo(l.sPos.x, l.sPos.y);
-                    ctx.lineTo(l.tPos.x, l.tPos.y);
-                });
-                ctx.stroke();
-            }
-
-            // B. Draw Highlighted Links (Focused neighbors)
-            if (highlightLinks.length > 0) {
-                ctx.beginPath();
-                ctx.strokeStyle = "#f6f5f2";
-                ctx.lineWidth = 1.5 / transform.k;
-                highlightLinks.forEach(l => {
-                    ctx.moveTo(l.sPos.x, l.sPos.y);
-                    ctx.lineTo(l.tPos.x, l.tPos.y);
-                });
-                ctx.stroke();
-            }
-
-            // C. Draw Path Links (Extreme priority)
-            if (pathLinksBatch.length > 0) {
-                ctx.beginPath();
-                ctx.strokeStyle = "#ffffff";
-                ctx.lineWidth = 4 / transform.k;
-                pathLinksBatch.forEach(l => {
-                    const sPos = positionCache.get(l.sId);
-                    const tPos = positionCache.get(l.tId);
-                    if (sPos && tPos) {
-                        ctx.moveTo(sPos.x, sPos.y);
-                        ctx.lineTo(tPos.x, tPos.y);
-                    }
-                });
-                ctx.stroke();
-            }
-
-            // 2. Draw Nodes
-            graphData.nodes.forEach(d => {
-                const r = nodeRadiusScale(d.views);
-                if (isMoving && transform.k < 0.1 && r * transform.k < 0.5) return;
-                if (d.x + r < xMin || d.x - r > xMax || d.y + r < yMin || d.y - r > yMax) return;
-
-                ctx.beginPath();
-                ctx.arc(d.x, d.y, r, 0, 2 * Math.PI);
-                const isHovered = hoveredNode === d;
-                const isSelected = selectedNode === d;
-                const isPathNode = isPathActive && activePath.has(d.id);
-                
-                if (isHovered || isSelected || isPathNode) {
-                    if (isPathNode) {
-                        ctx.fillStyle = '#ffffff';
-                    } else {
-                        const gradient = ctx.createLinearGradient(d.x - r, d.y - r, d.x + r, d.y + r);
-                        gradient.addColorStop(0, '#d35849');   // Terracotta Red
-                        gradient.addColorStop(0.5, '#e8b840'); // Golden Yellow
-                        gradient.addColorStop(1, '#588fa8');   // Slate Blue
-                        ctx.fillStyle = gradient;
-                    }
-                    ctx.globalAlpha = 1.0;
-                } else {
-                    ctx.fillStyle = categoryColors[d.category] || "#ffffff";
-                    // Dim background nodes when focus or path is active, but don't hide them
-                    ctx.globalAlpha = (activeFocusNode || isPathActive) ? (activeFocusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.15) : nodeOpacityScale(d.inDegree);
-                }
-                ctx.fill();
-
-                if (isHovered || isSelected || isPathNode) {
-                    ctx.strokeStyle = "#ffffff"; ctx.lineWidth = (isPathNode ? 3 : 1.5) / transform.k; ctx.stroke();
-                } else if (d.inDegree > maxInDegree * 0.15) {
-                    ctx.strokeStyle = categoryColors[d.category]; ctx.lineWidth = 1.0 / transform.k; ctx.stroke();
-                } else if (transform.k > 0.5) {
-                    ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 0.8 / transform.k; ctx.stroke();
-                }
-            });
-            ctx.globalAlpha = 1.0;
-            ctx.restore();
-        }
-
+        // --- D3 BEHAVIORS ---
         const zoom = d3.zoom()
             .scaleExtent([0.02, 8])
             .on("start", () => { isInteracting = true; })
@@ -1810,66 +1316,390 @@ else if (typeof exports === 'object'){
                 executeQuery();
             });
 
-        d3.select(canvas).on("mousemove", (event) => {
+        function gravityForce(alpha) {
+            const minDistance2 = 100;
+            graphData.links.forEach(l => {
+                const source = l.source, target = l.target;
+                if (typeof source !== "object" || typeof target !== "object") return;
+                const dx = target.x - source.x, dy = target.y - source.y;
+                const r2 = dx * dx + dy * dy, r = Math.sqrt(r2);
+                if (r === 0) return;
+                const forceMagnitude = gravityStrength * ((source.inDegree || 1) * (target.inDegree || 1)) / Math.max(r2, minDistance2);
+                const fx = forceMagnitude * (dx / r) * alpha, fy = forceMagnitude * (dy / r) * alpha;
+                source.vx += fx; source.vy += fy; target.vx -= fx; target.vy -= fy;
+            });
+        }
+
+        const simulation = d3.forceSimulation([])
+            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(0.05))
+            .force("charge", d3.forceManyBody().strength(currentCharge))
+            .force("center", d3.forceCenter(0, 0))
+            .force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1))
+            .force("gravity", gravityForce);
+
+        simulation.on("tick", () => {
+            simulation.nodes().forEach(n => {
+                positionCache.set(n.id, { x: n.x, y: n.y });
+            });
+            requestDraw();
+        });
+
+        // --- CORE FUNCTIONS ---
+        function requestDraw() {
+            if (rafPending) return;
+            rafPending = true;
+            requestAnimationFrame(() => { draw(); rafPending = false; });
+        }
+
+        function updateRenderingCache() {
+            activeNodeMap = new Map(graphData.nodes.map(n => [n.id, n]));
+            activeFocusNode = selectedNode || (!isInteracting ? hoveredNode : null);
+            activeFocusNeighbors.clear();
+            if (activeFocusNode) {
+                activeFocusNeighbors.add(activeFocusNode.id);
+                (adjacencyList.get(activeFocusNode.id) || []).forEach(id => activeFocusNeighbors.add(id));
+            }
+        }
+
+        function executeQuery(immediate = false) {
             if (!db) return;
-            const transformState = d3.zoomTransform(canvas);
-            const mouseX = (event.offsetX - transformState.x) / transformState.k;
-            const mouseY = (event.offsetY - transformState.y) / transformState.k;
-            let found = null;
-            for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i];
-                const dx = d.x - mouseX, dy = d.y - mouseY;
-                const r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 6) * Math.max(r, 6)) {
-                    found = d; break;
+            if (!immediate && isInteracting) {
+                if (queryTimeout) clearTimeout(queryTimeout);
+                queryTimeout = setTimeout(() => executeQuery(true), 150);
+                return;
+            }
+            const xMin = (-transform.x) / transform.k, xMax = (width - transform.x) / transform.k;
+            const yMin = (-transform.y) / transform.k, yMax = (height - transform.y) / transform.k;
+            
+            // Note: fViews element is removed, so we default to 0
+            const minV = 0; 
+            const pad = isInteracting ? 100 : 300;
+            
+            const stmt = db.prepare("SELECT * FROM nodes WHERE x BETWEEN :x1 AND :x2 AND y BETWEEN :y1 AND :y2 AND views >= :v");
+            stmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":v": minV});
+            
+            const nodes = [];
+            while (stmt.step()) {
+                const row = stmt.getAsObject();
+                if (!hiddenCategories.has(row.category)) nodes.push(row);
+            }
+            stmt.free();
+            
+            const links = [];
+            if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
+                if (activePathLinks.size > 0) {
+                    const pStmt = db.prepare("SELECT source, target FROM links WHERE (source IN (SELECT id FROM nodes WHERE x BETWEEN :x1 AND :x2))");
+                    pStmt.bind({":x1": xMin-pad, ":x2": xMax+pad});
+                    while (pStmt.step()) {
+                        const r = pStmt.getAsObject();
+                        if (activePathLinks.has(`${r.source}->${r.target}`) || activePathLinks.has(`${r.target}->${r.source}`)) links.push(r);
+                    }
+                    pStmt.free();
                 }
+                const lStmt = db.prepare("WITH RL AS (SELECT l.source, l.target, ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank FROM links l JOIN nodes n1 ON l.source=n1.id JOIN nodes n2 ON l.target=n2.id WHERE n1.x BETWEEN :x1 AND :x2 AND n1.y BETWEEN :y1 AND :y2) SELECT source, target FROM RL WHERE rank <= :d");
+                lStmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":d": currentDensity});
+                while (lStmt.step()) {
+                    const r = lStmt.getAsObject();
+                    if (!activePathLinks.has(`${r.source}->${r.target}`) && !activePathLinks.has(`${r.target}->${r.source}`)) links.push(r);
+                }
+                lStmt.free();
             }
-            if (found !== hoveredNode) {
-                hoveredNode = found; 
-                updateRenderingCache();
-                requestDraw();
-                if (hoveredNode) {
-                    tooltip.style.opacity = 1;
-                    document.getElementById("tt-title").textContent = hoveredNode.id;
-                    const catEl = document.getElementById("tt-cat");
-                    catEl.textContent = hoveredNode.category;
-                    catEl.style.color = categoryColors[hoveredNode.category] || "var(--color-other)";
-                } else { tooltip.style.opacity = 0; }
+            graphData = { nodes, links };
+            updateRenderingCache();
+            updateSimulation(nodes, links);
+            if (highPerfMode && isInteracting) { simulation.stop(); requestDraw(); }
+        }
+
+        function updateSimulation(nodes, links) {
+            nodes.forEach(n => {
+                const c = positionCache.get(n.id);
+                if (c) { n.x = c.x; n.y = c.y; if (highPerfMode) { n.fx = c.x; n.fy = c.y; } }
+            });
+            simulation.nodes(nodes);
+            simulation.force("link").links(links);
+            if (!isInteracting && !(highPerfMode && nodes.every(n => positionCache.has(n.id)))) simulation.alpha(0.05).restart();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, width, height); ctx.save();
+            ctx.translate(transform.x, transform.y); ctx.scale(transform.k, transform.k);
+            const xMin = (-transform.x)/transform.k, xMax = (width-transform.x)/transform.k, yMin = (-transform.y)/transform.k, yMax = (height-transform.y)/transform.k;
+            const isPathActive = activePath.size > 0, isMoving = isInteracting;
+            const bgL = [], hiL = [], paL = [];
+            
+            linkCache.forEach(l => {
+                const sId = l.s, tId = l.t;
+                if (isPathActive && (activePathLinks.has(`${sId}->${tId}`) || activePathLinks.has(`${tId}->${sId}`))) { paL.push({sId, tId}); return; }
+                if (isPathActive) return;
+                const sP = positionCache.get(sId), tP = positionCache.get(tId);
+                if (!sP || !tP) return;
+                if (!(sP.x > xMin && sP.x < xMax && sP.y > yMin && sP.y < yMax) && !(tP.x > xMin && tP.x < xMax && tP.y > yMin && tP.y < yMax)) return;
+                const sM = nodeMetadata.get(sId), tM = nodeMetadata.get(tId);
+                if (!sM || !tM || hiddenCategories.has(sM.category) || hiddenCategories.has(tM.category)) return;
+                if (activeFocusNode && (sId === activeFocusNode.id || tId === activeFocusNode.id)) { hiL.push({sP, tP}); return; }
+                if (sM.views < (isMoving ? 500000 : 100000) && tM.views < (isMoving ? 500000 : 100000)) return;
+                bgL.push({sP, tP});
+            });
+
+            if (bgL.length) { ctx.beginPath(); ctx.strokeStyle = `rgba(214,210,202,${isMoving ? 0.015:0.05})`; ctx.lineWidth = 0.5/transform.k; bgL.forEach(l => { ctx.moveTo(l.sP.x, l.sP.y); ctx.lineTo(l.tP.x, l.tP.y); }); ctx.stroke(); }
+            if (hiL.length) { ctx.beginPath(); ctx.strokeStyle = "#f6f5f2"; ctx.lineWidth = 1.5/transform.k; hiL.forEach(l => { ctx.moveTo(l.sP.x, l.sP.y); ctx.lineTo(l.tP.x, l.tP.y); }); ctx.stroke(); }
+            if (paL.length) { ctx.beginPath(); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 4/transform.k; paL.forEach(l => { const s=positionCache.get(l.sId),t=positionCache.get(l.tId); if(s&&t){ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);}}); ctx.stroke(); }
+
+            graphData.nodes.forEach(d => {
+                const r = nodeRadiusScale(d.views);
+                if (isMoving && transform.k < 0.1 && r * transform.k < 0.5) return;
+                if (d.x+r < xMin || d.x-r > xMax || d.y+r < yMin || d.y-r > yMax) return;
+                ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, 2*Math.PI);
+                const isH = hoveredNode === d, isS = selectedNode === d, isP = isPathActive && activePath.has(d.id);
+                if (isH || isS || isP) {
+                    if (isP) ctx.fillStyle = '#ffffff';
+                    else { const g = ctx.createLinearGradient(d.x-r, d.y-r, d.x+r, d.y+r); g.addColorStop(0, '#e8b840'); g.addColorStop(1, '#588fa8'); ctx.fillStyle = g; }
+                    ctx.globalAlpha = 1.0;
+                } else {
+                    ctx.fillStyle = categoryColors[d.category] || "#ffffff";
+                    ctx.globalAlpha = (activeFocusNode || isPathActive) ? (activeFocusNeighbors.has(d.id) || activePath.has(d.id) ? 1.0 : 0.15) : nodeOpacityScale(d.inDegree);
+                }
+                ctx.fill();
+                if (isH || isS || isP) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = (isP ? 3 : 1.5)/transform.k; ctx.stroke(); }
+                else if (d.inDegree > maxInDegree * 0.15) { ctx.strokeStyle = categoryColors[d.category]; ctx.lineWidth = 1.0/transform.k; ctx.stroke(); }
+                else if (transform.k > 0.5) { ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 0.8/transform.k; ctx.stroke(); }
+            });
+            ctx.globalAlpha = 1.0; ctx.restore();
+        }
+
+        // --- UTILS ---
+        function clearHighlights() {
+            activePath = new Set(); activePathLinks = new Set();
+            document.getElementById("route-result-container").style.display = "none";
+            document.getElementById("route-text-path").innerHTML = "";
+            selectedNode = null; sidebar.classList.remove("active");
+            if (window.innerWidth > 768) ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
+            executeQuery(true);
+        }
+
+        function selectNode(d, triggerQuery = true) {
+            selectedNode = d;
+            if (triggerQuery) executeQuery();
+            updateRenderingCache();
+            const scale = Math.max(transform.k, 0.4), x = width/2 - d.x*scale, y = height/2 - d.y*scale;
+            d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+            document.getElementById("sidebar-tag").textContent = d.category;
+            document.getElementById("sidebar-tag").style.color = categoryColors[d.category] || "#9d9894";
+            document.getElementById("sidebar-title").textContent = d.id;
+            document.getElementById("sidebar-views").textContent = d.views.toLocaleString();
+            document.getElementById("sidebar-inbound").textContent = d.inDegree;
+            document.getElementById("sidebar-outbound").textContent = d.outDegree;
+            document.getElementById("sidebar-desc").innerHTML = d.snippet || "No excerpt.";
+            sidebar.classList.add("active");
+            if (window.innerWidth > 768) ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(-450px)");
+        }
+
+        function deselectNode() {
+            if (selectedNode === null && activePath.size === 0) return;
+            selectedNode = null; activePath = new Set(); activePathLinks = new Set();
+            document.getElementById("route-result-container").style.display = "none";
+            document.getElementById("route-text-path").innerHTML = "";
+            executeQuery(); updateRenderingCache();
+            sidebar.classList.remove("active");
+            if (window.innerWidth > 768) ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
+        }
+
+        function handleSearch() {
+            const query = searchBox.value.trim();
+            if (query.length < 2) return;
+            clearHighlights();
+            const stmt = db.prepare("SELECT * FROM nodes WHERE id = :q COLLATE NOCASE");
+            stmt.bind({ ":q": query });
+            if (stmt.step()) selectNode(stmt.getAsObject());
+            stmt.free();
+        }
+
+        async function findRoute() {
+            const startId = routeStart.value.trim(), endId = routeEnd.value.trim();
+            if (!startId || !endId || !adjacencyList.has(startId) || !adjacencyList.has(endId)) {
+                if (startId && endId) alert("Nodes not found."); return;
             }
-            if (hoveredNode) {
-                tooltip.style.left = (event.pageX + 15) + "px"; tooltip.style.top = (event.pageY - 15) + "px";
+            const loader = document.getElementById("route-loader");
+            if (loader) loader.style.display = "block";
+            setTimeout(() => {
+                clearHighlights();
+                const q = [startId], preds = new Map(); preds.set(startId, null);
+                let found = false;
+                while (q.length) {
+                    const n = q.shift();
+                    if (n === endId) { found = true; break; }
+                    (adjacencyList.get(n) || []).forEach(neigh => { if (!preds.has(neigh)) { preds.set(neigh, n); q.push(neigh); }});
+                    if (preds.size > 30000) break;
+                }
+                if (found) {
+                    const path = []; let curr = endId; while (curr !== null) { path.push(curr); curr = preds.get(curr); }
+                    path.reverse(); activePath = new Set(path); activePathLinks = new Set();
+                    for (let i = 0; i < path.length - 1; i++) activePathLinks.add(`${path[i]}->${path[i+1]}`);
+                    const container = document.getElementById("route-result-container"), text = document.getElementById("route-text-path");
+                    text.innerHTML = ""; path.forEach((t, i) => {
+                        const step = document.createElement("div"); step.style.cursor = "pointer"; step.style.display = "flex"; step.style.gap = "8px";
+                        step.innerHTML = `<span style="opacity:0.6">${i+1}.</span> <span>${t}</span>`;
+                        step.onclick = () => { const s = db.prepare("SELECT * FROM nodes WHERE id=:id"); s.bind({":id":t}); if(s.step()) selectNode(s.getAsObject()); s.free(); };
+                        text.appendChild(step);
+                    });
+                    container.style.display = "block";
+                    const sStmt = db.prepare("SELECT * FROM nodes WHERE id=:id"); sStmt.bind({":id":startId});
+                    if (sStmt.step()) selectNode(sStmt.getAsObject(), false); sStmt.free();
+                } else { alert("No path found."); }
+                if (loader) loader.style.display = "none";
+            }, 50);
+        }
+
+        // --- SETUP ---
+        function initDatabase() {
+            const wasmBinary = new Uint8Array(atob(SQL_WASM_BASE64).split("").map(c => c.charCodeAt(0)));
+            initSqlJs({ wasmBinary }).then(SQL => {
+                const dbData = pako.ungzip(new Uint8Array(atob(COMPRESSED_SQLITE_DB).split("").map(c => c.charCodeAt(0))));
+                db = new SQL.Database(dbData);
+                bootstrapVisualizer();
+            });
+        }
+
+        function bootstrapVisualizer() {
+            try {
+                const s1 = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
+                s1.step(); const m = s1.getAsObject(); s1.free();
+
+                maxViews = m.mv || 10000000; maxInDegree = m.md || 1;
+                nodeRadiusScale.domain([0, maxViews]); nodeOpacityScale.domain([0, maxInDegree]);
+                document.getElementById("s-nodes").textContent = (m.cn || 0).toLocaleString();
+                
+                const s2 = db.prepare("SELECT COUNT(*) as cl FROM links");
+                s2.step(); document.getElementById("stat-links").textContent = (s2.getAsObject().cl || 0).toLocaleString(); s2.free();
+
+                const s3 = db.prepare("SELECT id FROM nodes ORDER BY inDegree DESC LIMIT 1");
+                if (s3.step()) document.getElementById("stat-hub").textContent = s3.getAsObject().id; s3.free();
+
+                const datalist = document.getElementById("article-list");
+                const s4 = db.prepare("SELECT id, views, category, x, y FROM nodes");
+                while (s4.step()) {
+                    const r = s4.getAsObject();
+                    const opt = document.createElement("option"); opt.value = r.id; datalist.appendChild(opt);
+                    nodeMetadata.set(r.id, { views: r.views, category: r.category });
+                    positionCache.set(r.id, { x: r.x, y: r.y });
+                }
+                s4.free();
+
+                adjacencyList = new Map(); linkCache = [];
+                const s5 = db.prepare("SELECT source, target FROM links");
+                while (s5.step()) {
+                    const { source, target } = s5.getAsObject();
+                    if (!adjacencyList.has(source)) adjacencyList.set(source, []);
+                    if (!adjacencyList.has(target)) adjacencyList.set(target, []);
+                    adjacencyList.get(source).push(target); adjacencyList.get(target).push(source);
+                    linkCache.push({ s: source, t: target });
+                }
+                s5.free();
+
+                // Setup Legend Toggling
+                const legendList = document.getElementById("legend-list");
+                Object.entries(categoryColors).forEach(([topic, color]) => {
+                    const item = document.createElement("div"); item.className = "legend-item";
+                    item.innerHTML = `<div class="legend-color" style="background-color:${color}"></div><span>${topic}</span>`;
+                    item.onclick = () => {
+                        if (hiddenCategories.has(topic)) { hiddenCategories.delete(topic); item.style.opacity = "1"; }
+                        else { hiddenCategories.add(topic); item.style.opacity = "0.3"; }
+                        executeQuery(true);
+                    };
+                    legendList.appendChild(item);
+                });
+
+                document.getElementById("loading-screen").style.opacity = "0";
+                setTimeout(() => document.getElementById("loading-screen").style.display = "none", 600);
+                updateHighPerfSettings();
+                
+                // Interaction setup
+                d3.select(canvas).on("click", (event) => {
+                    const t = d3.zoomTransform(canvas), mx = (event.offsetX-t.x)/t.k, my = (event.offsetY-t.y)/t.k;
+                    let found = null;
+                    for (let i = graphData.nodes.length-1; i>=0; i--) {
+                        const d = graphData.nodes[i], dx = d.x-mx, dy=d.y-my, r = nodeRadiusScale(d.views);
+                        if (dx*dx + dy*dy < Math.max(r, 12)**2) { found = d; break; }
+                    }
+                    if (found) selectNode(found); else deselectNode();
+                });
+
+                canvas.addEventListener("mousemove", (event) => {
+                    const t = d3.zoomTransform(canvas), mx = (event.offsetX-t.x)/t.k, my = (event.offsetY-t.y)/t.k;
+                    let found = null;
+                    for (let i = graphData.nodes.length-1; i>=0; i--) {
+                        const d = graphData.nodes[i], dx = d.x-mx, dy=d.y-my, r = nodeRadiusScale(d.views);
+                        if (dx*dx + dy*dy < Math.max(r, 6)**2) { found = d; break; }
+                    }
+                    if (found !== hoveredNode) { hoveredNode = found; updateRenderingCache(); requestDraw(); }
+                    if (hoveredNode) { 
+                        tooltip.style.opacity = 1; tooltip.style.left = (event.pageX + 15) + "px"; tooltip.style.top = (event.pageY - 15) + "px"; 
+                        document.getElementById("tt-title").textContent = hoveredNode.id; 
+                        const catEl = document.getElementById("tt-cat"); catEl.textContent = hoveredNode.category; catEl.style.color = categoryColors[hoveredNode.category]; 
+                    } else tooltip.style.opacity = 0;
+                });
+
+                canvas.addEventListener("mouseout", () => { hoveredNode = null; tooltip.style.opacity = 0; updateRenderingCache(); requestDraw(); });
+
+                d3.select(canvas).call(zoom);
+                d3.select(canvas).call(zoom.transform, d3.zoomIdentity.translate(width/2, height/2).scale(0.12));
+
+                d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
+                    const t = d3.zoomTransform(canvas), mx = (event.sourceEvent.offsetX-t.x)/t.k, my = (event.sourceEvent.offsetY-t.y)/t.k;
+                    let found = null;
+                    for (let i = graphData.nodes.length-1; i>=0; i--) {
+                        const d = graphData.nodes[i], dx = d.x-mx, dy=d.y-my, r = nodeRadiusScale(d.views);
+                        if (dx*dx + dy*dy < Math.max(r, 8)**2) { found = d; break; }
+                    }
+                    return found;
+                }).on("start", (event) => { isInteracting = true; if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; })
+                .on("drag", (event) => { event.subject.fx = event.x; event.subject.fy = event.y; })
+                .on("end", (event) => { isInteracting = false; if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; executeQuery(); }));
+
+                simulation.on("tick", requestDraw);
+            } catch (err) {
+                console.error(err);
+                document.getElementById("loading-screen").innerHTML = `<div style="color:white; padding:20px; text-align:center">Initialization Error: ${err.message}</div>`;
             }
+        }
+
+        function resizeCanvas() {
+            width = container.clientWidth; height = container.clientHeight;
+            canvas.width = width * dpr; canvas.height = height * dpr;
+            ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.scale(dpr, dpr);
+            canvas.style.width = width + "px"; canvas.style.height = height + "px";
+        }
+
+        window.addEventListener("resize", () => {
+            resizeCanvas();
+            simulation.force("center", d3.forceCenter(width / 2, height / 2));
+            simulation.alpha(0.1).restart();
+            requestDraw();
         });
 
-        d3.select(canvas).on("mouseout", () => {
-            if (hoveredNode) { 
-                hoveredNode = null; 
-                updateRenderingCache();
-                tooltip.style.opacity = 0; 
-                requestDraw(); 
-            }
-        });
+        searchBox.addEventListener("input", handleSearch);
+        routeBtn.onclick = findRoute;
+        document.getElementById("sidebar-close").onclick = () => sidebar.classList.remove("active");
 
-        document.getElementById("sidebar-close").addEventListener("click", () => deselectNode());
+        const densitySlider = document.getElementById("slider-density");
+        densitySlider.oninput = () => { currentDensity = +densitySlider.value; document.getElementById("density-val").textContent = currentDensity; executeQuery(); };
+        const distSlider = document.getElementById("slider-distance");
+        distSlider.oninput = () => { currentDist = +distSlider.value; document.getElementById("dist-val").textContent = currentDist; simulation.force("link").distance(currentDist); simulation.alpha(0.3).restart(); };
+        const chargeSlider = document.getElementById("slider-charge");
+        chargeSlider.oninput = () => { currentCharge = +chargeSlider.value; document.getElementById("charge-val").textContent = currentCharge; simulation.force("charge").strength(currentCharge); simulation.alpha(0.3).restart(); };
+        const collisionSlider = document.getElementById("slider-collision");
+        collisionSlider.oninput = () => { currentCollision = +collisionSlider.value; document.getElementById("col-val").textContent = currentCollision; if (!highPerfMode) simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16); simulation.alpha(0.3).restart(); };
+        const gravitySlider = document.getElementById("slider-gravity");
+        gravitySlider.oninput = () => { gravityStrength = +gravitySlider.value; document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2); simulation.alpha(0.3).restart(); };
 
         function setupCollapsiblePanel(panelId, toggleId) {
-            const panel = document.getElementById(panelId);
-            const toggleBtn = document.getElementById(toggleId);
+            const panel = document.getElementById(panelId), toggleBtn = document.getElementById(toggleId);
             toggleBtn.addEventListener("click", () => {
                 const isCollapsed = panel.classList.toggle("collapsed");
-                if (isCollapsed) {
-                    toggleBtn.classList.remove("active");
-                } else {
-                    // On mobile, close other panels when one is opened
-                    if (window.innerWidth <= 768) {
-                        document.querySelectorAll('div.panel:not(#' + panelId + ')').forEach(p => {
-                            if (p.id !== 'detail-sidebar') p.classList.add('collapsed');
-                        });
-                        document.querySelectorAll('.toggle-btn:not(#' + toggleId + ')').forEach(b => {
-                            b.classList.remove('active');
-                        });
-                    }
-                    toggleBtn.classList.add("active");
+                toggleBtn.classList.toggle("active", !isCollapsed);
+                if (!isCollapsed && window.innerWidth <= 768) {
+                    document.querySelectorAll('div.panel:not(#' + panelId + ')').forEach(p => { if (p.id !== 'detail-sidebar') p.classList.add('collapsed'); });
+                    document.querySelectorAll('.toggle-btn:not(#' + toggleId + ')').forEach(b => b.classList.remove('active'));
                 }
             });
         }
@@ -1878,222 +1708,16 @@ else if (typeof exports === 'object'){
         setupCollapsiblePanel("controls-panel", "controls-toggle");
         setupCollapsiblePanel("legend-panel", "legend-toggle");
 
-        const searchBox = document.getElementById("search-box");
-        const routeStart = document.getElementById("route-start");
-        const routeEnd = document.getElementById("route-end");
-        const routeBtn = document.getElementById("find-route-btn");
-        let activePath = new Set(); 
-        let activePathLinks = new Set(); 
-
-        function handleSearch() {
-            const query = searchBox.value.trim();
-            if (query.length < 2) return;
-            
-            clearHighlights();
-            const stmt = db.prepare("SELECT * FROM nodes WHERE id = :query COLLATE NOCASE");
-            stmt.bind({ ":query": query });
-            if (stmt.step()) {
-                const match = stmt.getAsObject();
-                selectNode(match);
-            }
-            stmt.free();
-        }
-
-        searchBox.addEventListener("input", handleSearch);
-
-        async function findRoute() {
-            const startId = routeStart.value.trim();
-            const endId = routeEnd.value.trim();
-            if (!startId || !endId || !adjacencyList.has(startId) || !adjacencyList.has(endId)) {
-                if (startId && endId) alert("One or both articles not found in the current visualization.");
-                return;
-            }
-
-            const loader = document.getElementById("route-loader");
-            loader.style.display = "block";
-
-            setTimeout(() => {
-                clearHighlights();
-                const queue = [startId];
-                const predecessors = new Map();
-                predecessors.set(startId, null);
-                let found = false;
-
-                while (queue.length > 0) {
-                    const node = queue.shift();
-                    if (node === endId) { found = true; break; }
-                    const neighbors = adjacencyList.get(node) || [];
-                    for (const neighbor of neighbors) {
-                        if (!predecessors.has(neighbor)) {
-                            predecessors.set(neighbor, node);
-                            queue.push(neighbor);
-                        }
-                    }
-                    if (predecessors.size > 30000) break; 
-                }
-
-                if (found) {
-                    const foundPath = [];
-                    let curr = endId;
-                    while (curr !== null) { foundPath.push(curr); curr = predecessors.get(curr); }
-                    foundPath.reverse();
-
-                    activePath = new Set(foundPath);
-                    activePathLinks = new Set();
-                    for (let i = 0; i < foundPath.length - 1; i++) {
-                        activePathLinks.add(`${foundPath[i]}->${foundPath[i+1]}`);
-                    }
-                    
-                    const container = document.getElementById("route-result-container");
-                    const pathText = document.getElementById("route-text-path");
-                    pathText.innerHTML = "";
-                    foundPath.forEach((title, idx) => {
-                        const step = document.createElement("div");
-                        step.style.cursor = "pointer"; step.style.display = "flex"; step.style.gap = "8px";
-                        step.innerHTML = `<span style="color:var(--color-bone); opacity:0.6">${idx + 1}.</span> <span>${title}</span>`;
-                        step.addEventListener("click", () => {
-                            const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                            nodeQuery.bind({ ":id": title });
-                            if (nodeQuery.step()) selectNode(nodeQuery.getAsObject());
-                            nodeQuery.free();
-                        });
-                        pathText.appendChild(step);
-                    });
-                    container.style.display = "block";
-                    
-                    const startNodeStmt = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                    startNodeStmt.bind({":id": startId});
-                    if (startNodeStmt.step()) selectNode(startNodeStmt.getAsObject());
-                    startNodeStmt.free();
-                    requestDraw();
-                } else {
-                    alert("No path found between these articles in the current dataset.");
-                }
-                loader.style.display = "none";
-            }, 50);
-        }
-
-        routeBtn.addEventListener("click", findRoute);
-
-        function selectNode(d, triggerQuery = true) {
-            selectedNode = d;
-            const neighbors = new Set([d.id]);
-            const connectionListItems = [];
-            const stmt = db.prepare("SELECT source, target FROM links WHERE source = :focusId OR target = :focusId");
-            stmt.bind({ ":focusId": d.id });
-            while (stmt.step()) {
-                const row = stmt.getAsObject();
-                const neighborId = row.source === d.id ? row.target : row.source;
-                const type = row.source === d.id ? "out" : "in";
-                const detailsStmt = db.prepare("SELECT category FROM nodes WHERE id = :id");
-                detailsStmt.bind({ ":id": neighborId });
-                if (detailsStmt.step()) {
-                    connectionListItems.push({id: neighborId, category: detailsStmt.getAsObject().category, type});
-                }
-                detailsStmt.free();
-            }
-            stmt.free();
-            if (triggerQuery) executeQuery();
-            updateRenderingCache();
-            const scale = Math.max(transform.k, 0.4);
-            const x = width / 2 - d.x * scale, y = height / 2 - d.y * scale;
-            d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
-
-            document.getElementById("sidebar-tag").textContent = d.category;
-            document.getElementById("sidebar-tag").style.color = categoryColors[d.category] || "var(--color-ash)";
-            document.getElementById("sidebar-title").textContent = d.id;
-            document.getElementById("sidebar-views").textContent = d.views.toLocaleString();
-            document.getElementById("sidebar-inbound").textContent = d.inDegree;
-            document.getElementById("sidebar-outbound").textContent = d.outDegree;
-            document.getElementById("sidebar-desc").innerHTML = d.snippet || "No excerpt details available for this Wikipedia article.";
-            
-            const connListContainer = document.getElementById("sidebar-connections");
-            connListContainer.innerHTML = "";
-            connectionListItems.sort((a,b) => a.id.localeCompare(b.id)).forEach(conn => {
-                const item = document.createElement("li");
-                item.className = "connection-item";
-                const color = categoryColors[conn.category] || "var(--color-ash)";
-                item.innerHTML = `<div><span style="font-weight:normal; margin-right:8px; color:var(--color-bone)">➔</span><span>${conn.id}</span></div><span class="conn-cat" style="color: ${color}; border-color: ${color}; opacity: 0.85;">${conn.category}</span>`;
-                item.addEventListener("click", () => {
-                    const nodeQuery = db.prepare("SELECT * FROM nodes WHERE id = :id");
-                    nodeQuery.bind({ ":id": conn.id });
-                    if (nodeQuery.step()) selectNode(nodeQuery.getAsObject());
-                    nodeQuery.free();
-                });
-                connListContainer.appendChild(item);
-            });
-            document.getElementById("sidebar-wiki-link").href = `https://en.wikipedia.org/wiki/${encodeURIComponent(d.id.replace(/ /g, '_'))}`;
-            sidebar.classList.add("active");
-            if (window.innerWidth > 768) {
-                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(-450px)");
-            }
-        }
-
-        function deselectNode() {
-            if (selectedNode === null && activePath.size === 0) return;
-            selectedNode = null;
-            activePath = new Set();
-            activePathLinks = new Set();
-            document.getElementById("route-result-container").style.display = "none";
-            document.getElementById("route-text-path").innerHTML = "";
-            executeQuery();
-            updateRenderingCache();
-            sidebar.classList.remove("active");
-            if (window.innerWidth > 768) {
-                ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(0)");
-            }
-        }
-
-        d3.select(canvas).on("click", (event) => {
-            if (!db) return;
-            const tState = d3.zoomTransform(canvas);
-            const mx = (event.offsetX - tState.x) / tState.k;
-            const my = (event.offsetY - tState.y) / tState.k;
-            let found = null;
-            for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i], dx = d.x - mx, dy = d.y - my, r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 12) * Math.max(r, 12)) { found = d; break; }
-            }
-            if (found) selectNode(found); else deselectNode();
-            updateRenderingCache();
-        });
-
-        d3.select(canvas).call(d3.drag().container(canvas).subject((event) => {
-            if (!db) return null;
-            const tState = d3.zoomTransform(canvas);
-            const mx = (event.sourceEvent.offsetX - tState.x) / tState.k;
-            const my = (event.sourceEvent.offsetY - tState.y) / tState.k;
-            let found = null;
-            for (let i = graphData.nodes.length - 1; i >= 0; i--) {
-                const d = graphData.nodes[i], dx = d.x - mx, dy = d.y - my, r = nodeRadiusScale(d.views);
-                if (dx * dx + dy * dy < Math.max(r, 8) * Math.max(r, 8)) { found = d; break; }
-            }
-            return found;
-        }).on("start", (event) => { isInteracting = true; if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; })
-          .on("drag", (event) => { event.subject.fx = event.x; event.subject.fy = event.y; })
-          .on("end", (event) => { isInteracting = false; if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; executeQuery(); }));
-
-        const sliderDensity = document.getElementById("slider-density");
-        sliderDensity.addEventListener("input", () => { currentDensity = +sliderDensity.value; document.getElementById("density-val").textContent = currentDensity; executeQuery(); });
-        const sliderDistance = document.getElementById("slider-distance");
-        sliderDistance.addEventListener("input", () => { currentDist = +sliderDistance.value; document.getElementById("dist-val").textContent = currentDist; simulation.force("link").distance(currentDist); simulation.alpha(0.3).restart(); });
-        const sliderCharge = document.getElementById("slider-charge");
-        sliderCharge.addEventListener("input", () => { currentCharge = +sliderCharge.value; document.getElementById("charge-val").textContent = currentCharge; simulation.force("charge").strength(currentCharge); simulation.alpha(0.3).restart(); });
-        const sliderCollision = document.getElementById("slider-collision");
-        sliderCollision.addEventListener("input", () => { currentCollision = +sliderCollision.value; document.getElementById("col-val").textContent = currentCollision; if (!highPerfMode) simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16); simulation.alpha(0.3).restart(); });
-        const sliderGravity = document.getElementById("slider-gravity");
-        sliderGravity.addEventListener("input", () => { gravityStrength = +sliderGravity.value; document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2); simulation.alpha(0.3).restart(); });
-
         const highPerfToggle = document.getElementById("high-perf-toggle");
-        function updateHighPerfSettings() {
+        highPerfToggle.onchange = () => {
             highPerfMode = highPerfToggle.checked;
             if (highPerfMode) { simulation.force("collision", null); simulation.alphaDecay(0.08); }
-            else { simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1)); simulation.alphaDecay(0.0228); }
+            else { simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16)); simulation.alphaDecay(0.0228); }
             executeQuery();
-        }
-        highPerfToggle.addEventListener("change", updateHighPerfSettings);
-        window.addEventListener("resize", () => { resizeCanvas(); simulation.force("center", d3.forceCenter(width / 2, height / 2)); simulation.alpha(0.1).restart(); requestDraw(); });
+        };
+
         initDatabase();
+        resizeCanvas();
         String.prototype.strip = function() { return this.replace(/^\s+|\s+$/g, ''); };
     </script>
 </body>
