@@ -1494,11 +1494,15 @@ else if (typeof exports === 'object'){
             linkCache = [];
             nodeMetadata = new Map();
 
-            // Cache node metadata (views, categories)
-            const metaQueryStmt = db.prepare("SELECT id, views, category FROM nodes");
+            // Cache node metadata (views, categories) AND initial coordinates
+            const metaQueryStmt = db.prepare("SELECT id, views, category, x, y FROM nodes");
             while (metaQueryStmt.step()) {
                 const row = metaQueryStmt.getAsObject();
                 nodeMetadata.set(row.id, { views: row.views, category: row.category });
+                // Pre-populate position cache from DB so links work immediately on boot
+                if (!positionCache.has(row.id)) {
+                    positionCache.set(row.id, { x: row.x, y: row.y });
+                }
             }
             metaQueryStmt.free();
 
@@ -1709,11 +1713,11 @@ else if (typeof exports === 'object'){
                 // If a path is active, hide everything else
                 if (activePath.size > 0) return;
 
-                // PERFORMANCE: During interaction, only draw "skeleton" (links between high-view nodes)
+                // PERFORMANCE: During interaction, only draw "skeleton" (links between prominent nodes)
                 if (highPerfMode && isInteracting) {
                     const sMeta = nodeMetadata.get(sId);
                     const tMeta = nodeMetadata.get(tId);
-                    if (!sMeta || !tMeta || (sMeta.views < 500000 && tMeta.views < 500000)) return;
+                    if (!sMeta || !tMeta || (sMeta.views < 100000 && tMeta.views < 100000)) return;
                 }
 
                 if (focusNode && sId !== focusNode.id && tId !== focusNode.id) return;
