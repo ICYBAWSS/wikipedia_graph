@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js" crossorigin="anonymous"></script>
     
     <!-- WASM SQLite and Decompressor Inlined Placeholders -->
     <script>
@@ -715,10 +715,32 @@ else if (typeof exports === 'object'){
         .legend-item {
             display: flex;
             align-items: center;
-            gap: 10px;
+            justify-content: space-between;
             font-size: 12.5px;
             margin-bottom: 8px;
             color: var(--color-ash);
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 4px;
+            transition: background-color 0.2s, opacity 0.2s;
+        }
+        .legend-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .legend-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .legend-eye {
+            opacity: 0.6;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            color: var(--color-ash);
+        }
+        .legend-item:hover .legend-eye {
+            opacity: 1.0;
         }
 
         .legend-color {
@@ -1036,7 +1058,7 @@ else if (typeof exports === 'object'){
 
     <!-- UI Panel: Simulation Speed/Controls -->
     <div id="controls-panel" class="panel glass">
-        <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Physics Controls</div>
+        <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Controls</div>
         
         <!-- High Performance Mode Toggle -->
         <div class="control-group" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
@@ -1053,12 +1075,34 @@ else if (typeof exports === 'object'){
             </label>
         </div>
 
+        <!-- Show Links During Interaction Toggle -->
+        <div class="control-group" id="group-interaction-links" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: var(--color-ash); font-weight: 400;">Show Links During Pan/Zoom</span>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Keeps all links visible while dragging/zooming, but may reduce frame rate.</div>
+                </div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="interaction-links-toggle" style="opacity: 0; width: 0; height: 0;">
+                <span class="slider-toggle"></span>
+            </label>
+        </div>
+
         <div class="control-group">
             <div class="control-label">
                 <span>Link Distance</span>
                 <span id="dist-val">120</span>
             </div>
             <input type="range" class="control-slider" id="slider-distance" min="30" max="800" value="120">
+        </div>
+        <div class="control-group">
+            <div class="control-label">
+                <span>Link Strength</span>
+                <span id="strength-val">0.15</span>
+            </div>
+            <input type="range" class="control-slider" id="slider-strength" min="0.01" max="0.5" step="0.01" value="0.15">
         </div>
         <div class="control-group">
             <div class="control-label">
@@ -1073,6 +1117,13 @@ else if (typeof exports === 'object'){
                 <span id="col-val">20</span>
             </div>
             <input type="range" class="control-slider" id="slider-collision" min="5" max="60" value="20">
+        </div>
+        <div class="control-group">
+            <div class="control-label">
+                <span>Node Size Scale</span>
+                <span id="size-val">1.0</span>
+            </div>
+            <input type="range" class="control-slider" id="slider-size" min="0.2" max="4.0" step="0.1" value="1.0">
         </div>
         <div class="control-group">
             <div class="control-label">
@@ -1145,11 +1196,70 @@ else if (typeof exports === 'object'){
 
     <!-- Visualizer Script -->
     <script>
+
+
         let highPerfMode = true;
+
+        function toggleSliderGroup(sliderId, disable) {
+            const slider = document.getElementById(sliderId);
+            if (!slider) return;
+            slider.disabled = disable;
+            const group = slider.closest(".control-group");
+            if (group) {
+                group.style.opacity = disable ? "0.4" : "1.0";
+                group.style.pointerEvents = disable ? "none" : "auto";
+            }
+        }
+
+        function updateHighPerfSettings() {
+            const highPerfToggle = document.getElementById("high-perf-toggle");
+            if (!highPerfToggle) return;
+            highPerfMode = highPerfToggle.checked;
+            
+            const interactionLinksToggle = document.getElementById("interaction-links-toggle");
+            
+            if (highPerfMode) {
+                simulation.force("collision", null);
+                simulation.alphaDecay(0.08);
+                if (interactionLinksToggle) {
+                    interactionLinksToggle.checked = false;
+                    interactionLinksToggle.disabled = true;
+                    showLinksDuringInteraction = false;
+                    const group = interactionLinksToggle.closest(".control-group");
+                    if (group) {
+                        group.style.opacity = "0.4";
+                        group.style.pointerEvents = "none";
+                    }
+                }
+            } else {
+                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1));
+                simulation.alphaDecay(0.0228);
+                if (interactionLinksToggle) {
+                    interactionLinksToggle.disabled = false;
+                    const group = interactionLinksToggle.closest(".control-group");
+                    if (group) {
+                        group.style.opacity = "1.0";
+                        group.style.pointerEvents = "auto";
+                    }
+                }
+            }
+
+            // Disable sliders that have no effect in high performance mode
+            toggleSliderGroup("slider-density", highPerfMode);
+            toggleSliderGroup("slider-distance", highPerfMode);
+            toggleSliderGroup("slider-strength", highPerfMode);
+            toggleSliderGroup("slider-charge", highPerfMode);
+            toggleSliderGroup("slider-collision", highPerfMode);
+            toggleSliderGroup("slider-gravity", highPerfMode);
+
+            executeQuery();
+        }
         let db = null;
         let graphData = { nodes: [], links: [] }; // currently loaded viewport data
         let selectedNode = null;
         let hoveredNode = null;
+        let hiddenCategories = new Set();
+        let showLinksDuringInteraction = false;
         let isInteracting = false;
         let transform = d3.zoomIdentity;
 
@@ -1176,13 +1286,38 @@ else if (typeof exports === 'object'){
 
         // Render Legend
         const legendList = document.getElementById("legend-list");
+        const EYE_ON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+        const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+
         Object.entries(categoryColors).forEach(([topic, color]) => {
             const item = document.createElement("div");
             item.className = "legend-item";
-            item.innerHTML = `
-                <div class="legend-color" style="background-color: ${color}"></div>
-                <span>${topic}</span>
-            `;
+            
+            const updateItemHTML = () => {
+                const isHidden = hiddenCategories.has(topic);
+                item.style.opacity = isHidden ? "0.4" : "1.0";
+                item.innerHTML = `
+                    <div class="legend-left">
+                        <div class="legend-color" style="background-color: ${color}"></div>
+                        <span>${topic}</span>
+                    </div>
+                    <div class="legend-eye">
+                        ${isHidden ? EYE_OFF_SVG : EYE_ON_SVG}
+                    </div>
+                `;
+            };
+            
+            updateItemHTML();
+            
+            item.onclick = () => {
+                if (hiddenCategories.has(topic)) {
+                    hiddenCategories.delete(topic);
+                } else {
+                    hiddenCategories.add(topic);
+                }
+                updateItemHTML();
+                executeQuery();
+            };
             legendList.appendChild(item);
         });
 
@@ -1210,50 +1345,60 @@ else if (typeof exports === 'object'){
         const sidebar = document.getElementById("detail-sidebar");
 
         // Global scales and parameters
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([5, 26]);
+        let baseRadiusMin = 5, baseRadiusMax = 26, nodeSizeMultiplier = 1.0;
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([baseRadiusMin, baseRadiusMax]);
         let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
         let maxViews = 10000000;
         let maxInDegree = 1;
 
         // Force Simulation setup
         let currentDist = 120;
+        let currentStrength = 0.15;
         let currentCharge = -200;
         let currentCollision = 20;
         let gravityStrength = 0.05;
 
         // Custom gravity force between connected nodes: F = G * m1 * m2 / r^2
         function gravityForce(alpha) {
-            const minDistance2 = 100;
-            graphData.links.forEach(l => {
-                const source = l.source;
-                const target = l.target;
-                if (typeof source !== "object" || typeof target !== "object") return;
-                const dx = target.x - source.x;
-                const dy = target.y - source.y;
-                const r2 = dx * dx + dy * dy;
-                const r = Math.sqrt(r2);
-                if (r === 0) return;
-                const m1 = source.inDegree || 1;
-                const m2 = target.inDegree || 1;
-                const forceMagnitude = gravityStrength * (m1 * m2) / Math.max(r2, minDistance2);
-                const fx = forceMagnitude * (dx / r) * alpha;
-                const fy = forceMagnitude * (dy / r) * alpha;
-                source.vx += fx;
-                source.vy += fy;
-                target.vx -= fx;
-                target.vy -= fy;
-            });
+            try {
+                const minDistance2 = 100;
+                graphData.links.forEach(l => {
+                    const source = l.source;
+                    const target = l.target;
+                    if (!source || !target || typeof source !== "object" || typeof target !== "object") return;
+                    const dx = target.x - source.x;
+                    const dy = target.y - source.y;
+                    const r2 = dx * dx + dy * dy;
+                    const r = Math.sqrt(r2);
+                    if (r === 0) return;
+                    const m1 = source.inDegree || 1;
+                    const m2 = target.inDegree || 1;
+                    const forceMagnitude = gravityStrength * (m1 * m2) / Math.max(r2, minDistance2);
+                    const fx = forceMagnitude * (dx / r) * alpha;
+                    const fy = forceMagnitude * (dy / r) * alpha;
+                    source.vx += fx;
+                    source.vy += fy;
+                    target.vx -= fx;
+                    target.vy -= fy;
+                });
+            } catch (e) {
+                console.error("Error in gravityForce:", e);
+            }
         }
 
         const simulation = d3.forceSimulation([])
-            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(0.05))
+            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(currentStrength))
             .force("charge", d3.forceManyBody().strength(currentCharge))
             .force("center", d3.forceCenter(width / 2, height / 2))
             .force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1))
             .force("gravity", gravityForce);
 
         simulation.on("tick", () => {
-            requestDraw();
+            try {
+                requestDraw();
+            } catch (e) {
+                console.error("Error in simulation tick handler:", e);
+            }
         });
 
         let rafPending = false;
@@ -1263,8 +1408,13 @@ else if (typeof exports === 'object'){
             if (rafPending) return;
             rafPending = true;
             requestAnimationFrame(() => {
-                draw();
-                rafPending = false;
+                try {
+                    draw();
+                } catch (e) {
+                    console.error("Error in draw function:", e);
+                } finally {
+                    rafPending = false;
+                }
             });
         }
 
@@ -1360,16 +1510,38 @@ else if (typeof exports === 'object'){
             const minViews = +filterViews.value;
             const minRef = +filterRef.value;
 
-            let nodeSql = `
-                SELECT id, category, views, inDegree, outDegree, x, y, snippet 
-                FROM nodes 
-                WHERE x BETWEEN :xMin AND :xMax 
-                  AND y BETWEEN :yMin AND :yMax 
-                  AND views >= :minViews
-                  AND inDegree >= :minRef
-            `;
+            // Check if database has any precomputed coordinates
+            const hasCoords = db.prepare("SELECT COUNT(*) as c FROM nodes WHERE x != 0 OR y != 0");
+            hasCoords.step();
+            const useViewport = hasCoords.getAsObject().c > 0;
+            hasCoords.free();
+
+            let nodeSql;
+            if (useViewport) {
+                nodeSql = `
+                    SELECT id, category, views, inDegree, outDegree, x, y, snippet 
+                    FROM nodes 
+                    WHERE x BETWEEN :xMin AND :xMax 
+                      AND y BETWEEN :yMin AND :yMax 
+                      AND views >= :minViews
+                      AND inDegree >= :minRef
+                `;
+            } else {
+                nodeSql = `
+                    SELECT id, category, views, inDegree, outDegree, x, y, snippet 
+                    FROM nodes 
+                    WHERE views >= :minViews
+                      AND inDegree >= :minRef
+                `;
+            }
             const padding = isInteracting ? 100 : 300;
-            const params = { ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding, ":minViews": minViews, ":minRef": minRef };
+            const params = { ":minViews": minViews, ":minRef": minRef };
+            if (useViewport) {
+                params[":xMin"] = xMin - padding;
+                params[":xMax"] = xMax + padding;
+                params[":yMin"] = yMin - padding;
+                params[":yMax"] = yMax + padding;
+            }
 
             if (category !== "all") { nodeSql += " AND category = :category"; params[":category"] = category; }
             if (query !== "") { nodeSql += " AND id LIKE :query"; params[":query"] = `%${query}%`; }
@@ -1380,21 +1552,38 @@ else if (typeof exports === 'object'){
             const nodes = [];
             while (stmt.step()) {
                 const row = stmt.getAsObject();
-                nodes.push({ id: row.id, category: row.category, views: row.views, inDegree: row.inDegree, outDegree: row.outDegree, x: row.x, y: row.y, snippet: row.snippet });
+                if (row.x === 0 && row.y === 0) {
+                    const angle = Math.random() * 2 * Math.PI;
+                    const radius = Math.sqrt(Math.random()) * 150;
+                    row.x = radius * Math.cos(angle);
+                    row.y = radius * Math.sin(angle);
+                }
+                if (!hiddenCategories.has(row.category)) {
+                    nodes.push({ id: row.id, category: row.category, views: row.views, inDegree: row.inDegree, outDegree: row.outDegree, x: row.x, y: row.y, snippet: row.snippet });
+                }
             }
             stmt.free();
 
             const links = [];
-            if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
-                const linkSql = `
-                    SELECT l.source, l.target FROM links l
-                    JOIN nodes n1 ON l.source = n1.id
-                    JOIN nodes n2 ON l.target = n2.id
-                    WHERE n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax
-                      AND n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax
-                `;
+            if (nodes.length > 0 && !(highPerfMode && isInteracting && !showLinksDuringInteraction)) {
+                let linkSql;
+                if (useViewport) {
+                    linkSql = `
+                        SELECT l.source, l.target FROM links l
+                        JOIN nodes n1 ON l.source = n1.id
+                        JOIN nodes n2 ON l.target = n2.id
+                        WHERE n1.x BETWEEN :xMin AND :xMax AND n1.y BETWEEN :yMin AND :yMax
+                          AND n2.x BETWEEN :xMin AND :xMax AND n2.y BETWEEN :yMin AND :yMax
+                    `;
+                } else {
+                    linkSql = `
+                        SELECT l.source, l.target FROM links l
+                    `;
+                }
                 const linkStmt = db.prepare(linkSql);
-                linkStmt.bind({ ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding });
+                if (useViewport) {
+                    linkStmt.bind({ ":xMin": xMin - padding, ":xMax": xMax + padding, ":yMin": yMin - padding, ":yMax": yMax + padding });
+                }
                 while (linkStmt.step()) {
                     const row = linkStmt.getAsObject();
                     links.push({ source: row.source, target: row.target });
@@ -1421,7 +1610,13 @@ else if (typeof exports === 'object'){
                 }
             });
             simulation.nodes(visibleNodes);
-            simulation.force("link").links(visibleLinks);
+            const nodeIds = new Set(visibleNodes.map(n => n.id));
+            const validLinks = visibleLinks.filter(l => {
+                const sId = typeof l.source === 'object' ? l.source.id : l.source;
+                const tId = typeof l.target === 'object' ? l.target.id : l.target;
+                return nodeIds.has(sId) && nodeIds.has(tId);
+            });
+            simulation.force("link").links(validLinks);
             if (!isInteracting) simulation.alpha(0.05).restart();
         }
 
@@ -1449,7 +1644,7 @@ else if (typeof exports === 'object'){
                 });
             }
 
-            if (!(highPerfMode && isInteracting)) {
+            if (!(highPerfMode && isInteracting && !showLinksDuringInteraction)) {
                 ctx.beginPath();
                 graphData.links.forEach(l => {
                     const sourceNode = typeof l.source === "object" ? l.source : nodeMap.get(l.source);
@@ -1617,7 +1812,7 @@ else if (typeof exports === 'object'){
             }
             stmt.free();
             executeQuery();
-            const scale = Math.max(transform.k, 0.4);
+            const scale = Math.max(transform.k, 1.2);
             const x = width / 2 - d.x * scale, y = height / 2 - d.y * scale;
             d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
 
@@ -1705,6 +1900,13 @@ else if (typeof exports === 'object'){
             simulation.force("link").distance(currentDist);
             simulation.alpha(0.3).restart();
         });
+        const sliderStrength = document.getElementById("slider-strength");
+        sliderStrength.addEventListener("input", () => {
+            currentStrength = +sliderStrength.value;
+            document.getElementById("strength-val").textContent = currentStrength.toFixed(2);
+            simulation.force("link").strength(currentStrength);
+            simulation.alpha(0.3).restart();
+        });
         const sliderCharge = document.getElementById("slider-charge");
         sliderCharge.addEventListener("input", () => {
             currentCharge = +sliderCharge.value;
@@ -1721,26 +1923,35 @@ else if (typeof exports === 'object'){
                 simulation.alpha(0.3).restart();
             }
         });
+        const sliderSize = document.getElementById("slider-size");
+        sliderSize.addEventListener("input", () => {
+            nodeSizeMultiplier = +sliderSize.value;
+            document.getElementById("size-val").textContent = nodeSizeMultiplier.toFixed(1);
+            nodeRadiusScale.range([baseRadiusMin * nodeSizeMultiplier, baseRadiusMax * nodeSizeMultiplier]);
+            if (!highPerfMode) {
+                simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16);
+            }
+            simulation.alpha(0.1).restart();
+            requestDraw();
+        });
         const sliderGravity = document.getElementById("slider-gravity");
         sliderGravity.addEventListener("input", () => {
             gravityStrength = +sliderGravity.value;
             document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2);
             simulation.alpha(0.3).restart();
         });
+        const interactionLinksToggle = document.getElementById("interaction-links-toggle");
+        if (interactionLinksToggle) {
+            interactionLinksToggle.addEventListener("change", () => {
+                showLinksDuringInteraction = interactionLinksToggle.checked;
+                requestDraw();
+            });
+        }
 
         const highPerfToggle = document.getElementById("high-perf-toggle");
-        function updateHighPerfSettings() {
-            highPerfMode = highPerfToggle.checked;
-            if (highPerfMode) {
-                simulation.force("collision", null);
-                simulation.alphaDecay(0.08);
-            } else {
-                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1));
-                simulation.alphaDecay(0.0228);
-            }
-            executeQuery();
+        if (highPerfToggle) {
+            highPerfToggle.addEventListener("change", updateHighPerfSettings);
         }
-        highPerfToggle.addEventListener("change", updateHighPerfSettings);
         window.addEventListener("resize", () => {
             resizeCanvas();
             simulation.force("center", d3.forceCenter(width / 2, height / 2));

@@ -271,125 +271,12 @@ def compile_graph():
 
 def run_spring_layout(nodes, links, iterations=80, k=None):
     """
-    Dependency-free Fruchterman-Reingold layout algorithm / Semantic spiral hybrid.
-    Computes static x and y coordinates for each node offline.
+    Initializes coordinates to 0,0 so that layout positions are computed
+    on the frontend and saved back to the database.
     """
-    import math
-    import random
-    
-    n_count = len(nodes)
-    if n_count == 0:
-        return
-        
-    pos = {}
-    node_ids = [n["id"] for n in nodes]
-    
-    # If graph is large (>= 3000 nodes), use the fast hierarchical category spiral layout
-    if n_count >= 3000:
-        cat_groups = {}
-        for n in nodes:
-            cat = n["category"]
-            cat_groups.setdefault(cat, []).append(n)
-            
-        categories = list(cat_groups.keys())
-        num_cats = len(categories)
-        
-        cat_centers = {}
-        for idx, cat in enumerate(categories):
-            angle = (idx / num_cats) * 2.0 * math.pi
-            r_center = 1200.0
-            cat_centers[cat] = [r_center * math.cos(angle), r_center * math.sin(angle)]
-            
-        for cat, cat_nodes in cat_groups.items():
-            cx, cy = cat_centers[cat]
-            cat_nodes_sorted = sorted(cat_nodes, key=lambda n: n["inDegree"], reverse=True)
-            for idx, n in enumerate(cat_nodes_sorted):
-                theta = idx * 0.15
-                r_node = 35.0 * math.sqrt(idx) + 50.0
-                pos[n["id"]] = [
-                    cx + r_node * math.cos(theta),
-                    cy + r_node * math.sin(theta)
-                ]
-    else:
-        # Fruchterman-Reingold spring simulation
-        # Initialize positions randomly in center area
-        for nid in node_ids:
-            pos[nid] = [random.uniform(-400, 400), random.uniform(-400, 400)]
-            
-        if k is None:
-            k = math.sqrt(3000000.0 / n_count)
-            
-        temp = 100.0
-        dt = temp / iterations
-        
-        for step in range(iterations):
-            disp = {nid: [0.0, 0.0] for nid in node_ids}
-            
-            # Repulsive forces
-            for i in range(n_count):
-                nid_i = node_ids[i]
-                px_i, py_i = pos[nid_i]
-                for j in range(i + 1, n_count):
-                    nid_j = node_ids[j]
-                    px_j, py_j = pos[nid_j]
-                    
-                    dx = px_i - px_j
-                    dy = py_i - py_j
-                    dist2 = dx * dx + dy * dy
-                    dist = math.sqrt(dist2)
-                    if dist == 0:
-                        dist = 0.1
-                        dx = 0.1
-                        
-                    fr = (k * k) / dist
-                    fx = (dx / dist) * fr
-                    fy = (dy / dist) * fr
-                    
-                    disp[nid_i][0] += fx
-                    disp[nid_i][1] += fy
-                    disp[nid_j][0] -= fx
-                    disp[nid_j][1] -= fy
-                    
-            # Attractive forces along links
-            for l in links:
-                s, t = l["source"], l["target"]
-                if s not in pos or t not in pos:
-                    continue
-                px_s, py_s = pos[s]
-                px_t, py_t = pos[t]
-                
-                dx = px_s - px_t
-                dy = py_s - py_t
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist == 0:
-                    dist = 0.1
-                    dx = 0.1
-                    
-                fa = (dist * dist) / k
-                fx = (dx / dist) * fa
-                fy = (dy / dist) * fa
-                
-                disp[s][0] -= fx
-                disp[s][1] -= fy
-                disp[t][0] += fx
-                disp[t][1] += fy
-                
-            # Displace nodes constrained by temperature
-            for nid in node_ids:
-                dx, dy = disp[nid]
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist == 0:
-                    continue
-                scale = min(dist, temp) / dist
-                pos[nid][0] += dx * scale
-                pos[nid][1] += dy * scale
-                
-            temp -= dt
-            
-    # Save positions
     for n in nodes:
-        n["x"] = pos[n["id"]][0]
-        n["y"] = pos[n["id"]][1]
+        n["x"] = 0.0
+        n["y"] = 0.0
 
 if __name__ == "__main__":
     compile_graph()
