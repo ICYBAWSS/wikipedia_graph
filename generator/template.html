@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js" crossorigin="anonymous"></script>
     
     <!-- WASM SQLite and Decompressor Inlined Placeholders -->
     <script>
@@ -519,10 +519,32 @@
         .legend-item {
             display: flex;
             align-items: center;
-            gap: 10px;
+            justify-content: space-between;
             font-size: 12.5px;
             margin-bottom: 8px;
             color: var(--color-ash);
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 4px;
+            transition: background-color 0.2s, opacity 0.2s;
+        }
+        .legend-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .legend-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .legend-eye {
+            opacity: 0.6;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            color: var(--color-ash);
+        }
+        .legend-item:hover .legend-eye {
+            opacity: 1.0;
         }
 
         .legend-color {
@@ -941,7 +963,7 @@
 
     <!-- UI Panel: Simulation Speed/Controls -->
     <div id="controls-panel" class="panel glass collapsed">
-        <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Physics Controls</div>
+        <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Controls</div>
         
         <!-- High Performance Mode Toggle -->
         <div class="control-group" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
@@ -954,6 +976,21 @@
             </div>
             <label class="switch">
                 <input type="checkbox" id="high-perf-toggle" checked style="opacity: 0; width: 0; height: 0;">
+                <span class="slider-toggle"></span>
+            </label>
+        </div>
+
+        <!-- Show Links During Interaction Toggle -->
+        <div class="control-group" id="group-interaction-links" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: var(--color-ash); font-weight: 400;">Show Links During Pan/Zoom</span>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Keeps all links visible while dragging/zooming, but may reduce frame rate.</div>
+                </div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="interaction-links-toggle" style="opacity: 0; width: 0; height: 0;">
                 <span class="slider-toggle"></span>
             </label>
         </div>
@@ -974,6 +1011,13 @@
         </div>
         <div class="control-group">
             <div class="control-label">
+                <span>Link Strength</span>
+                <span id="strength-val">0.15</span>
+            </div>
+            <input type="range" class="control-slider" id="slider-strength" min="0.01" max="0.5" step="0.01" value="0.15">
+        </div>
+        <div class="control-group">
+            <div class="control-label">
                 <span>Charge Strength</span>
                 <span id="charge-val">-200</span>
             </div>
@@ -988,10 +1032,23 @@
         </div>
         <div class="control-group">
             <div class="control-label">
+                <span>Node Size Scale</span>
+                <span id="size-val">1.0</span>
+            </div>
+            <input type="range" class="control-slider" id="slider-size" min="0.2" max="4.0" step="0.1" value="1.0">
+        </div>
+        <div class="control-group">
+            <div class="control-label">
                 <span>Gravity Constant</span>
                 <span id="gravity-val">0.05</span>
             </div>
             <input type="range" class="control-slider" id="slider-gravity" min="0" max="0.5" step="0.01" value="0.05">
+        </div>
+        <div class="control-group" style="margin-top: 20px; display: none;">
+            <button id="save-layout-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--color-ash);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                Save Layout Coordinates
+            </button>
         </div>
     </div>
 
@@ -1057,6 +1114,8 @@
 
     <!-- Visualizer Script -->
     <script>
+
+
         // --- GLOBAL STATE ---
         let db = null;
         let graphData = { nodes: [], links: [] };
@@ -1072,6 +1131,7 @@
         let hiddenCategories = new Set();
         let activePath = new Set();
         let activePathLinks = new Set();
+        let showLinksDuringInteraction = false;
 
         let selectedNode = null;
         let hoveredNode = null;
@@ -1079,6 +1139,61 @@
         let rafPending = false;
         let queryTimeout = null;
         let highPerfMode = true;
+
+        function toggleSliderGroup(sliderId, disable) {
+            const slider = document.getElementById(sliderId);
+            if (!slider) return;
+            slider.disabled = disable;
+            const group = slider.closest(".control-group");
+            if (group) {
+                group.style.opacity = disable ? "0.4" : "1.0";
+                group.style.pointerEvents = disable ? "none" : "auto";
+            }
+        }
+
+        function updateHighPerfSettings() {
+            const highPerfToggle = document.getElementById("high-perf-toggle");
+            if (!highPerfToggle) return;
+            highPerfMode = highPerfToggle.checked;
+            
+            const interactionLinksToggle = document.getElementById("interaction-links-toggle");
+            
+            if (highPerfMode) {
+                simulation.force("collision", null);
+                simulation.alphaDecay(0.08);
+                if (interactionLinksToggle) {
+                    interactionLinksToggle.checked = false;
+                    interactionLinksToggle.disabled = true;
+                    showLinksDuringInteraction = false;
+                    const group = interactionLinksToggle.closest(".control-group");
+                    if (group) {
+                        group.style.opacity = "0.4";
+                        group.style.pointerEvents = "none";
+                    }
+                }
+            } else {
+                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16));
+                simulation.alphaDecay(0.0228);
+                if (interactionLinksToggle) {
+                    interactionLinksToggle.disabled = false;
+                    const group = interactionLinksToggle.closest(".control-group");
+                    if (group) {
+                        group.style.opacity = "1.0";
+                        group.style.pointerEvents = "auto";
+                    }
+                }
+            }
+
+            // Disable sliders that have no effect in high performance mode
+            toggleSliderGroup("slider-density", highPerfMode);
+            toggleSliderGroup("slider-distance", highPerfMode);
+            toggleSliderGroup("slider-strength", highPerfMode);
+            toggleSliderGroup("slider-charge", highPerfMode);
+            toggleSliderGroup("slider-collision", highPerfMode);
+            toggleSliderGroup("slider-gravity", highPerfMode);
+
+            executeQuery();
+        }
 
         const categoryColors = {
             "Biography & People": "#a8788a",
@@ -1102,10 +1217,11 @@
         const routeBtn = document.getElementById("find-route-btn");
 
         let width, height, dpr = window.devicePixelRatio || 1;
-        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([2, 5]);
+        let baseRadiusMin = 2, baseRadiusMax = 5, nodeSizeMultiplier = 1.0;
+        let nodeRadiusScale = d3.scalePow().exponent(0.25).range([baseRadiusMin, baseRadiusMax]);
         let nodeOpacityScale = d3.scaleLinear().range([0.35, 1.0]);
         let maxViews = 10000000, maxInDegree = 1;
-        let currentDist = 120, currentCharge = -200, currentCollision = 20, currentDensity = 10, gravityStrength = 0.05;
+        let currentDist = 120, currentStrength = 0.15, currentCharge = -200, currentCollision = 20, currentDensity = 10, gravityStrength = 0.05;
 
         // --- D3 BEHAVIORS ---
         const zoom = d3.zoom()
@@ -1121,38 +1237,67 @@
             });
 
         function gravityForce(alpha) {
-            const minDistance2 = 100;
-            graphData.links.forEach(l => {
-                const source = l.source, target = l.target;
-                if (typeof source !== "object" || typeof target !== "object") return;
-                const dx = target.x - source.x, dy = target.y - source.y;
-                const r2 = dx * dx + dy * dy, r = Math.sqrt(r2);
-                if (r === 0) return;
-                const forceMagnitude = gravityStrength * ((source.inDegree || 1) * (target.inDegree || 1)) / Math.max(r2, minDistance2);
-                const fx = forceMagnitude * (dx / r) * alpha, fy = forceMagnitude * (dy / r) * alpha;
-                source.vx += fx; source.vy += fy; target.vx -= fx; target.vy -= fy;
-            });
+            try {
+                const minDistance2 = 100;
+                graphData.links.forEach(l => {
+                    const source = l.source, target = l.target;
+                    if (!source || !target || typeof source !== "object" || typeof target !== "object") return;
+                    const dx = target.x - source.x, dy = target.y - source.y;
+                    const r2 = dx * dx + dy * dy, r = Math.sqrt(r2);
+                    if (r === 0) return;
+                    const forceMagnitude = gravityStrength * ((source.inDegree || 1) * (target.inDegree || 1)) / Math.max(r2, minDistance2);
+                    const fx = forceMagnitude * (dx / r) * alpha, fy = forceMagnitude * (dy / r) * alpha;
+                    source.vx += fx; source.vy += fy; target.vx -= fx; target.vy -= fy;
+                });
+            } catch (e) {
+                console.error("Error in gravityForce:", e);
+            }
         }
 
         const simulation = d3.forceSimulation([])
-            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(0.05))
+            .force("link", d3.forceLink([]).id(d => d.id).distance(currentDist).strength(currentStrength))
             .force("charge", d3.forceManyBody().strength(currentCharge))
             .force("center", d3.forceCenter(0, 0))
             .force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16).iterations(1))
             .force("gravity", gravityForce);
 
+        let tickCount = 0;
         simulation.on("tick", () => {
-            simulation.nodes().forEach(n => {
-                positionCache.set(n.id, { x: n.x, y: n.y });
-            });
-            requestDraw();
+            try {
+                simulation.nodes().forEach(n => {
+                    positionCache.set(n.id, { x: n.x, y: n.y });
+                });
+                
+                // Log coordinates of first 5 nodes for the first 10 ticks
+                if (tickCount < 10) {
+                    tickCount++;
+                    const firstNodes = simulation.nodes().slice(0, 5).map(n => ({ id: n.id, x: n.x, y: n.y }));
+                    fetch('/log_coordinates', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tick: tickCount, nodes: firstNodes })
+                    }).catch(() => {});
+                }
+                
+                requestDraw();
+            } catch (e) {
+                console.error("Error in simulation tick handler:", e);
+            }
         });
 
         // --- CORE FUNCTIONS ---
         function requestDraw() {
             if (rafPending) return;
             rafPending = true;
-            requestAnimationFrame(() => { draw(); rafPending = false; });
+            requestAnimationFrame(() => {
+                try {
+                    draw();
+                } catch (e) {
+                    console.error("Error in draw function:", e);
+                } finally {
+                    rafPending = false;
+                }
+            });
         }
 
         function updateRenderingCache() {
@@ -1179,12 +1324,31 @@
             const minV = 0; 
             const pad = isInteracting ? 100 : 300;
             
-            const stmt = db.prepare("SELECT * FROM nodes WHERE x BETWEEN :x1 AND :x2 AND y BETWEEN :y1 AND :y2 AND views >= :v");
-            stmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":v": minV});
+            // Check if database has any precomputed coordinates
+            const hasCoords = db.prepare("SELECT COUNT(*) as c FROM nodes WHERE x != 0 OR y != 0");
+            hasCoords.step();
+            const useViewport = hasCoords.getAsObject().c > 0;
+            hasCoords.free();
+
+            let stmt;
+            if (useViewport) {
+                stmt = db.prepare("SELECT * FROM nodes WHERE x BETWEEN :x1 AND :x2 AND y BETWEEN :y1 AND :y2 AND views >= :v");
+                stmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":v": minV});
+            } else {
+                stmt = db.prepare("SELECT * FROM nodes WHERE views >= :v");
+                stmt.bind({":v": minV});
+            }
             
             const nodes = [];
             while (stmt.step()) {
                 const row = stmt.getAsObject();
+                if (row.x === 0 && row.y === 0) {
+                    // Start in a moderate cluster centered around 0,0 (radius 150px) to avoid charge force explosion
+                    const angle = Math.random() * 2 * Math.PI;
+                    const radius = Math.sqrt(Math.random()) * 150;
+                    row.x = radius * Math.cos(angle);
+                    row.y = radius * Math.sin(angle);
+                }
                 if (!hiddenCategories.has(row.category)) nodes.push(row);
             }
             stmt.free();
@@ -1192,16 +1356,27 @@
             const links = [];
             if (nodes.length > 0 && !(highPerfMode && isInteracting)) {
                 if (activePathLinks.size > 0) {
-                    const pStmt = db.prepare("SELECT source, target FROM links WHERE (source IN (SELECT id FROM nodes WHERE x BETWEEN :x1 AND :x2))");
-                    pStmt.bind({":x1": xMin-pad, ":x2": xMax+pad});
+                    let pStmt;
+                    if (useViewport) {
+                        pStmt = db.prepare("SELECT source, target FROM links WHERE (source IN (SELECT id FROM nodes WHERE x BETWEEN :x1 AND :x2))");
+                        pStmt.bind({":x1": xMin-pad, ":x2": xMax+pad});
+                    } else {
+                        pStmt = db.prepare("SELECT source, target FROM links");
+                    }
                     while (pStmt.step()) {
                         const r = pStmt.getAsObject();
                         if (activePathLinks.has(`${r.source}->${r.target}`) || activePathLinks.has(`${r.target}->${r.source}`)) links.push(r);
                     }
                     pStmt.free();
                 }
-                const lStmt = db.prepare("WITH RL AS (SELECT l.source, l.target, ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank FROM links l JOIN nodes n1 ON l.source=n1.id JOIN nodes n2 ON l.target=n2.id WHERE n1.x BETWEEN :x1 AND :x2 AND n1.y BETWEEN :y1 AND :y2) SELECT source, target FROM RL WHERE rank <= :d");
-                lStmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":d": currentDensity});
+                let lStmt;
+                if (useViewport) {
+                    lStmt = db.prepare("WITH RL AS (SELECT l.source, l.target, ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank FROM links l JOIN nodes n1 ON l.source=n1.id JOIN nodes n2 ON l.target=n2.id WHERE n1.x BETWEEN :x1 AND :x2 AND n1.y BETWEEN :y1 AND :y2) SELECT source, target FROM RL WHERE rank <= :d");
+                    lStmt.bind({":x1": xMin-pad, ":x2": xMax+pad, ":y1": yMin-pad, ":y2": yMax+pad, ":d": currentDensity});
+                } else {
+                    lStmt = db.prepare("WITH RL AS (SELECT l.source, l.target, ROW_NUMBER() OVER (PARTITION BY l.source ORDER BY n2.views DESC) as rank FROM links l JOIN nodes n2 ON l.target=n2.id) SELECT source, target FROM RL WHERE rank <= :d");
+                    lStmt.bind({":d": currentDensity});
+                }
                 while (lStmt.step()) {
                     const r = lStmt.getAsObject();
                     if (!activePathLinks.has(`${r.source}->${r.target}`) && !activePathLinks.has(`${r.target}->${r.source}`)) links.push(r);
@@ -1217,18 +1392,35 @@
         function updateSimulation(nodes, links) {
             nodes.forEach(n => {
                 const c = positionCache.get(n.id);
-                if (c) { n.x = c.x; n.y = c.y; if (highPerfMode) { n.fx = c.x; n.fy = c.y; } }
+                if (c && (c.x !== 0 || c.y !== 0)) {
+                    n.x = c.x; n.y = c.y;
+                    if (highPerfMode) { n.fx = c.x; n.fy = c.y; }
+                } else {
+                    n.fx = null; n.fy = null;
+                }
             });
             simulation.nodes(nodes);
-            simulation.force("link").links(links);
-            if (!isInteracting && !(highPerfMode && nodes.every(n => positionCache.has(n.id)))) simulation.alpha(0.05).restart();
+            const nodeIds = new Set(nodes.map(n => n.id));
+            const validLinks = links.filter(l => {
+                const sId = typeof l.source === 'object' ? l.source.id : l.source;
+                const tId = typeof l.target === 'object' ? l.target.id : l.target;
+                return nodeIds.has(sId) && nodeIds.has(tId);
+            });
+            simulation.force("link").links(validLinks);
+            const hasPrecomputedPositions = nodes.every(n => {
+                const c = positionCache.get(n.id);
+                return c && (c.x !== 0 || c.y !== 0);
+            });
+            if (!isInteracting && !(highPerfMode && hasPrecomputedPositions)) {
+                simulation.alpha(0.05).restart();
+            }
         }
 
         function draw() {
             ctx.clearRect(0, 0, width, height); ctx.save();
             ctx.translate(transform.x, transform.y); ctx.scale(transform.k, transform.k);
             const xMin = (-transform.x)/transform.k, xMax = (width-transform.x)/transform.k, yMin = (-transform.y)/transform.k, yMax = (height-transform.y)/transform.k;
-            const isPathActive = activePath.size > 0, isMoving = isInteracting;
+            const isPathActive = activePath.size > 0, isMoving = isInteracting && !showLinksDuringInteraction;
             const bgL = [], hiL = [], paL = [];
             
             linkCache.forEach(l => {
@@ -1285,7 +1477,7 @@
             selectedNode = d;
             if (triggerQuery) executeQuery();
             updateRenderingCache();
-            const scale = Math.max(transform.k, 0.4), x = width/2 - d.x*scale, y = height/2 - d.y*scale;
+            const scale = Math.max(transform.k, 1.2), x = width/2 - d.x*scale, y = height/2 - d.y*scale;
             d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
             document.getElementById("sidebar-tag").textContent = d.category;
             document.getElementById("sidebar-tag").style.color = categoryColors[d.category] || "#9d9894";
@@ -1364,20 +1556,6 @@
             });
         }
 
-        function updateHighPerfSettings() {
-            const highPerfToggle = document.getElementById("high-perf-toggle");
-            if (!highPerfToggle) return;
-            highPerfMode = highPerfToggle.checked;
-            if (highPerfMode) {
-                simulation.force("collision", null);
-                simulation.alphaDecay(0.08);
-            } else {
-                simulation.force("collision", d3.forceCollide().radius(d => nodeRadiusScale(d.views) + currentCollision - 16));
-                simulation.alphaDecay(0.0228);
-            }
-            executeQuery();
-        }
-
         function bootstrapVisualizer() {
             try {
                 const s1 = db.prepare("SELECT MAX(views) as mv, MAX(inDegree) as md, COUNT(*) as cn FROM nodes");
@@ -1416,12 +1594,35 @@
 
                 // Setup Legend Toggling
                 const legendList = document.getElementById("legend-list");
+                const EYE_ON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+                const EYE_OFF_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+                
                 Object.entries(categoryColors).forEach(([topic, color]) => {
                     const item = document.createElement("div"); item.className = "legend-item";
-                    item.innerHTML = `<div class="legend-color" style="background-color:${color}"></div><span>${topic}</span>`;
+                    
+                    const updateItemHTML = () => {
+                        const isHidden = hiddenCategories.has(topic);
+                        item.style.opacity = isHidden ? "0.4" : "1.0";
+                        item.innerHTML = `
+                            <div class="legend-left">
+                                <div class="legend-color" style="background-color:${color}"></div>
+                                <span>${topic}</span>
+                            </div>
+                            <div class="legend-eye">
+                                ${isHidden ? EYE_OFF_SVG : EYE_ON_SVG}
+                            </div>
+                        `;
+                    };
+                    
+                    updateItemHTML();
+                    
                     item.onclick = () => {
-                        if (hiddenCategories.has(topic)) { hiddenCategories.delete(topic); item.style.opacity = "1"; }
-                        else { hiddenCategories.add(topic); item.style.opacity = "0.3"; }
+                        if (hiddenCategories.has(topic)) {
+                            hiddenCategories.delete(topic);
+                        } else {
+                            hiddenCategories.add(topic);
+                        }
+                        updateItemHTML();
                         executeQuery(true);
                     };
                     legendList.appendChild(item);
@@ -1474,7 +1675,7 @@
                 .on("drag", (event) => { event.subject.fx = event.x; event.subject.fy = event.y; })
                 .on("end", (event) => { isInteracting = false; if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; executeQuery(); }));
 
-                simulation.on("tick", requestDraw);
+
             } catch (err) {
                 console.error(err);
                 document.getElementById("loading-screen").innerHTML = `<div style="color:white; padding:20px; text-align:center">Initialization Error: ${err.message}</div>`;
@@ -1503,12 +1704,30 @@
         densitySlider.oninput = () => { currentDensity = +densitySlider.value; document.getElementById("density-val").textContent = currentDensity; executeQuery(); };
         const distSlider = document.getElementById("slider-distance");
         distSlider.oninput = () => { currentDist = +distSlider.value; document.getElementById("dist-val").textContent = currentDist; simulation.force("link").distance(currentDist); simulation.alpha(0.3).restart(); };
+        const strengthSlider = document.getElementById("slider-strength");
+        strengthSlider.oninput = () => { currentStrength = +strengthSlider.value; document.getElementById("strength-val").textContent = currentStrength.toFixed(2); simulation.force("link").strength(currentStrength); simulation.alpha(0.3).restart(); };
         const chargeSlider = document.getElementById("slider-charge");
         chargeSlider.oninput = () => { currentCharge = +chargeSlider.value; document.getElementById("charge-val").textContent = currentCharge; simulation.force("charge").strength(currentCharge); simulation.alpha(0.3).restart(); };
         const collisionSlider = document.getElementById("slider-collision");
         collisionSlider.oninput = () => { currentCollision = +collisionSlider.value; document.getElementById("col-val").textContent = currentCollision; if (!highPerfMode) simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16); simulation.alpha(0.3).restart(); };
+        const sizeSlider = document.getElementById("slider-size");
+        sizeSlider.oninput = () => {
+            nodeSizeMultiplier = +sizeSlider.value;
+            document.getElementById("size-val").textContent = nodeSizeMultiplier.toFixed(1);
+            nodeRadiusScale.range([baseRadiusMin * nodeSizeMultiplier, baseRadiusMax * nodeSizeMultiplier]);
+            if (!highPerfMode) simulation.force("collision").radius(d => nodeRadiusScale(d.views) + currentCollision - 16);
+            simulation.alpha(0.1).restart();
+            requestDraw();
+        };
         const gravitySlider = document.getElementById("slider-gravity");
         gravitySlider.oninput = () => { gravityStrength = +gravitySlider.value; document.getElementById("gravity-val").textContent = gravityStrength.toFixed(2); simulation.alpha(0.3).restart(); };
+        const interactionLinksToggle = document.getElementById("interaction-links-toggle");
+        if (interactionLinksToggle) {
+            interactionLinksToggle.onchange = () => {
+                showLinksDuringInteraction = interactionLinksToggle.checked;
+                requestDraw();
+            };
+        }
 
         function setupCollapsiblePanel(panelId, toggleId) {
             const panel = document.getElementById(panelId), toggleBtn = document.getElementById(toggleId);
@@ -1534,6 +1753,49 @@
         initDatabase();
         resizeCanvas();
         String.prototype.strip = function() { return this.replace(/^\s+|\s+$/g, ''); };
+
+        // Save layout coordinates logic for local development
+        const saveLayoutBtn = document.getElementById("save-layout-btn");
+        if (saveLayoutBtn) {
+            const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+            if (isLocal) {
+                saveLayoutBtn.parentElement.style.display = "block";
+                saveLayoutBtn.onclick = () => {
+                    const nodePositions = [];
+                    simulation.nodes().forEach(n => {
+                        nodePositions.push({ id: n.id, x: n.x, y: n.y });
+                    });
+                    
+                    if (nodePositions.length === 0) {
+                        alert("No active nodes in simulation to save.");
+                        return;
+                    }
+                    
+                    saveLayoutBtn.disabled = true;
+                    saveLayoutBtn.textContent = "Saving...";
+                    
+                    fetch('/save_coordinates', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(nodePositions)
+                    })
+                    .then(res => {
+                        if (!res.ok) throw new Error("Server error " + res.status);
+                        return res.json();
+                    })
+                    .then(data => {
+                        alert(`Successfully saved ${nodePositions.length} node coordinates to the database! Run builder.py to compile index.html.`);
+                    })
+                    .catch(err => {
+                        alert("Failed to save coordinates: " + err.message);
+                    })
+                    .finally(() => {
+                        saveLayoutBtn.disabled = false;
+                        saveLayoutBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px; height:14px; display:block;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg> Save Layout Coordinates`;
+                    });
+                };
+            }
+        }
     </script>
 </body>
 </html>
