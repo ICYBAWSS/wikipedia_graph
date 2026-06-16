@@ -1,0 +1,2140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Knowledge Web (Deck.gl + Graphology)</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+    <script src="libs/sql-httpvfs.js"></script>
+    <!-- Load Deck.gl standalone -->
+    <script src="https://unpkg.com/deck.gl@latest/dist.min.js"></script>
+
+    <style>
+        :root {
+            /* Colors - Cecilia May Primary Theme (Nostalgic Warmness) */
+            --color-void: #2c2720;         /* Custom deep warm background */
+            --color-bone: #d6d2ca;         /* Warm beige text */
+            --color-ash: #9d9894;          /* Muted warm gray text */
+            --color-frost: #f6f5f2;        /* Light warm cream */
+            --color-graphite: #36322b;     /* Deep warm charcoal border */
+            --color-lilac-haze: #e8b840;   /* Warm golden yellow accent */
+            --gradient-iridescent: linear-gradient(135deg, #e8b840 0%, #588fa8 100%);
+
+            /* Typography — Font Families */
+            --font-aeonik: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-inter: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-geist: 'Geist Mono', monospace;
+
+            /* Spacing */
+            --spacing-8: 8px;
+            --spacing-16: 16px;
+            --spacing-24: 24px;
+            --spacing-32: 32px;
+            --spacing-40: 40px;
+            --spacing-48: 48px;
+
+            /* Border Radius */
+            --radius-tags: 9999px;
+            --radius-cards: 16px;
+            --radius-icons: 4px;
+            --radius-images: 8px;
+            --radius-inputs: 8px;
+            --radius-buttons: 9999px;
+            --radius-cardssmall: 6px;
+
+            /* Shadows */
+            --shadow-subtle: rgba(255, 255, 255, 0.03) 0px 1px 1px 0px inset;
+
+            /* Surfaces */
+            --surface-void: #1e1c18;
+            --surface-carbon: #25221d;
+            --surface-smoke: #2f2b25;
+
+            /* Category Colors */
+            --color-science: #588fa8;
+            --color-history: #d35849;
+            --color-art: #e8b840;
+            --color-philosophy: #748c69;
+            --color-geography: #c58c64;
+            --color-biography: #a8788a;
+            --color-other: #c3aed6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-inter);
+            letter-spacing: -0.015em;
+            background-color: var(--color-void);
+            color: var(--color-bone);
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Glassmorphism/Card utility */
+        .glass {
+            background: rgba(0, 0, 0, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--radius-cards);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        /* Layout */
+        #graph-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Overlay Panels */
+        .panel {
+            position: absolute;
+            z-index: 10;
+            pointer-events: auto;
+            transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Header Control Panel */
+        #header-panel {
+            top: 20px;
+            left: 20px;
+            padding: 24px;
+            width: 380px;
+        }
+        #header-panel:not(.collapsed) {
+            border-top-right-radius: 0;
+        }
+
+        .eyebrow {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.083em;
+            color: var(--color-ash);
+            margin-bottom: 6px;
+        }
+
+        h1 {
+            font-family: var(--font-aeonik);
+            font-size: 24px;
+            font-weight: 300;
+            letter-spacing: -0.02em;
+            margin-bottom: 8px;
+            color: var(--color-bone);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        h1 svg {
+            color: var(--color-bone);
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: var(--color-ash);
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+
+        /* Search input */
+        .search-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .search-input {
+            width: 100%;
+            background: var(--surface-carbon);
+            border: 1px solid var(--color-graphite);
+            border-radius: var(--radius-inputs);
+            padding: 12px 14px 12px 38px;
+            color: var(--color-bone);
+            font-family: var(--font-inter);
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .search-input::placeholder {
+            color: var(--color-ash);
+            opacity: 0.6;
+        }
+
+        .search-input:focus {
+            border-color: var(--color-ash);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 15px;
+            width: 14px;
+            height: 14px;
+            fill: var(--color-ash);
+        }
+
+        /* Stats Panel */
+        #stats-panel {
+            bottom: 20px;
+            left: 20px;
+            padding: 16px;
+            font-size: 13px;
+            color: var(--color-ash);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: flex-start;
+            width: 200px;
+        }
+        #stats-panel:not(.collapsed) {
+            border-bottom-right-radius: 0;
+        }
+
+        .stat-item {
+            font-weight: 400;
+        }
+
+        .stat-item span {
+            font-weight: 500;
+            color: var(--color-bone);
+        }
+
+        /* Config / Controls Panel */
+        #controls-panel {
+            top: 20px;
+            right: 20px;
+            padding: 20px;
+            width: 280px;
+            font-size: 13px;
+        }
+        #controls-panel:not(.collapsed) {
+            border-top-left-radius: 0;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            color: var(--color-ash);
+            margin-bottom: 10px;
+            font-weight: 400;
+            line-height: 1.5;
+        }
+
+        .control-slider {
+            width: 100%;
+            accent-color: var(--color-bone);
+            background: var(--color-graphite);
+            height: 4px;
+            border-radius: 2px;
+            outline: none;
+        }
+
+        /* Sidebar details */
+        #detail-sidebar {
+            top: 20px;
+            right: 20px;
+            bottom: 20px;
+            width: 420px;
+            padding: 30px;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(450px);
+            z-index: 20;
+            background: var(--surface-carbon);
+            border: 1px solid var(--color-graphite);
+            border-radius: var(--radius-cards);
+            box-shadow: var(--shadow-subtle);
+            font-family: var(--font-inter);
+            color: var(--color-bone);
+            transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        #detail-sidebar.active {
+            transform: translateX(0);
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: none;
+            border: none;
+            color: var(--color-ash);
+            cursor: pointer;
+            font-size: 20px;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.2s ease-in-out;
+        }
+
+        .close-btn:hover {
+            color: var(--color-bone);
+        }
+
+        .sidebar-header {
+            margin-top: 10px;
+            margin-bottom: 20px;
+            padding-right: 60px;
+        }
+
+        .node-category-tag {
+            display: inline-block;
+            font-family: var(--font-geist);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.083em;
+            padding: 4px 10px;
+            border-radius: var(--radius-tags);
+            margin-bottom: 12px;
+            background: transparent;
+            border: 1px solid var(--color-graphite);
+            color: var(--color-ash);
+        }
+
+        .node-title {
+            font-family: var(--font-aeonik);
+            font-size: 28px;
+            font-weight: 300;
+            line-height: 1.2;
+            color: var(--color-bone);
+            letter-spacing: -0.015em;
+        }
+
+        .sidebar-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--color-ash);
+            border-bottom: 1px solid var(--color-graphite);
+            padding-bottom: 16px;
+            margin-bottom: 16px;
+        }
+
+        .meta-val {
+            font-weight: 500;
+            color: var(--color-bone);
+        }
+
+        .node-description {
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--color-ash);
+            margin-bottom: 24px;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+
+        .sidebar-section {
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-height: 150px;
+        }
+
+        .section-title {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 400;
+            letter-spacing: 0.083em;
+            color: var(--color-ash);
+            margin-bottom: 10px;
+        }
+
+        .connections-list {
+            list-style: none;
+            overflow-y: auto;
+            flex-grow: 1;
+            max-height: 240px;
+            border: 1px solid var(--color-graphite);
+            border-radius: var(--radius-cards);
+            background: var(--color-void);
+            padding: 6px;
+        }
+
+        .connection-item {
+            padding: 10px 14px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--color-graphite);
+            cursor: pointer;
+            transition: all 0.15s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            color: var(--color-ash);
+        }
+
+        .connection-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: white;
+        }
+
+        .connection-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 500;
+        }
+
+        .connection-context {
+            font-size: 11.5px;
+            opacity: 0.6;
+            font-style: italic;
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .connection-context:hover {
+            opacity: 1;
+        }
+
+        .connection-context.expanded {
+            -webkit-line-clamp: unset;
+            display: block;
+        }
+
+        .connection-tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .conn-cat {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            padding: 2px 6px;
+            border-radius: var(--radius-tags);
+            border: 1px solid var(--color-graphite);
+            background: transparent;
+            color: var(--color-ash);
+        }
+
+        .connection-item:last-child {
+            border-bottom: none;
+        }
+
+        /* Scale Pill Button */
+        .wiki-link-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            background: transparent;
+            color: var(--color-bone);
+            border: 1px solid var(--color-ash);
+            padding: 10px 20px;
+            border-radius: var(--radius-buttons);
+            font-family: var(--font-inter);
+            font-weight: 500;
+            font-size: 14px;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            margin-top: auto;
+        }
+
+        .wiki-link-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: var(--color-bone);
+        }
+
+        .wiki-link-btn:active {
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: absolute;
+            background: var(--surface-carbon);
+            border: 1px solid var(--color-graphite);
+            border-radius: var(--radius-cardssmall);
+            padding: 8px 12px;
+            font-family: var(--font-inter);
+            font-size: 13px;
+            color: var(--color-bone);
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.15s ease-in-out;
+            box-shadow: var(--shadow-subtle);
+            max-width: 240px;
+        }
+
+        .tooltip-title {
+            font-weight: 500;
+            margin-bottom: 4px;
+        }
+
+        .tooltip-cat {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            padding: 2px 6px;
+            background: transparent;
+            border: 1px solid var(--color-graphite);
+            border-radius: var(--radius-tags);
+            display: inline-block;
+            color: var(--color-ash);
+        }
+
+        /* Legend Panel */
+        #legend-panel {
+            bottom: 20px;
+            right: 20px;
+            padding: 16px 20px;
+            width: 240px;
+        }
+        #legend-panel:not(.collapsed) {
+            border-bottom-left-radius: 0;
+        }
+
+        .legend-title {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.083em;
+            color: var(--color-ash);
+            margin-bottom: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12.5px;
+            margin-bottom: 8px;
+            color: var(--color-ash);
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 4px;
+            transition: background-color 0.2s, opacity 0.2s;
+        }
+        .legend-item:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .legend-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .legend-eye {
+            opacity: 0.6;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            color: var(--color-ash);
+        }
+        .legend-item:hover .legend-eye {
+            opacity: 1.0;
+        }
+
+        .legend-color {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Toggle Buttons */
+        .toggle-btn {
+            position: absolute;
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 15;
+            transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+            background: var(--color-bone);
+            color: var(--surface-void);
+            border: 1px solid var(--color-bone);
+            box-shadow: var(--shadow-subtle);
+            padding: 0;
+            margin: 0;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        #header-toggle {
+            top: 20px;
+            left: 20px;
+        }
+        #header-toggle.active {
+            left: 400px;
+            border-radius: 0 var(--radius-cards) var(--radius-cards) 0;
+            border-left: none;
+        }
+
+        #stats-toggle {
+            bottom: 20px;
+            left: 20px;
+        }
+        #stats-toggle.active {
+            left: 220px;
+            border-radius: 0 var(--radius-cards) var(--radius-cards) 0;
+            border-left: none;
+        }
+
+        #controls-toggle {
+            top: 20px;
+            right: 20px;
+        }
+        #controls-toggle.active {
+            right: 300px;
+            border-radius: var(--radius-cards) 0 0 var(--radius-cards);
+            border-right: none;
+        }
+
+        #legend-toggle {
+            bottom: 20px;
+            right: 20px;
+        }
+        #legend-toggle.active {
+            right: 260px;
+            border-radius: var(--radius-cards) 0 0 var(--radius-cards);
+            border-right: none;
+        }
+
+        .toggle-btn:hover {
+            color: var(--surface-void);
+            background: var(--color-frost);
+            border-color: var(--color-frost);
+        }
+
+        .toggle-btn.active {
+            background: rgba(0, 0, 0, 0.03);
+            color: var(--color-bone);
+            border-color: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        .toggle-btn.active:hover {
+            color: var(--color-bone);
+            background: var(--surface-smoke);
+            border-color: var(--color-ash);
+        }
+
+        /* Toggle Switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 20px;
+        }
+        .slider-toggle {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: var(--color-graphite);
+            transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: var(--radius-buttons);
+        }
+        .switch input:checked + .slider-toggle {
+            background-color: var(--color-bone);
+        }
+        .slider-toggle:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: var(--color-bone);
+            transition: .3s cubic-bezier(0.16, 1, 0.3, 1);
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+        }
+        .switch input:checked + .slider-toggle:before {
+            transform: translateX(16px);
+            background-color: var(--surface-void);
+        }
+
+        /* Loading Screen */
+        #loading-screen {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--color-void);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.6s ease-out;
+        }
+
+        .loader-ring {
+            width: 40px; height: 40px;
+            border: 3px solid var(--color-graphite);
+            border-top: 3px solid var(--color-lilac-haze);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        .mini-loader {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-top: 2px solid var(--color-lilac-haze);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .panel {
+            animation: springEntrance 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        .panel.collapsed {
+            opacity: 0 !important;
+            pointer-events: none !important;
+            transform: scale(0.95) !important;
+            animation: none !important;
+        }
+
+        @keyframes springEntrance {
+            0% { transform: scale(0.95); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes jiggle {
+            0% { transform: scale(1) rotate(0deg); }
+            20% { transform: scale(1.1) rotate(-8deg); }
+            40% { transform: scale(1.1) rotate(6deg); }
+            60% { transform: scale(1.1) rotate(-4deg); }
+            80% { transform: scale(1.1) rotate(3deg); }
+            100% { transform: scale(1.1) rotate(0deg); }
+        }
+
+        .toggle-btn:hover .icon {
+            display: inline-block;
+            animation: jiggle 0.6s ease-in-out;
+        }
+
+        .close-btn:hover {
+            color: var(--color-bone);
+            animation: jiggle 0.6s ease-in-out;
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--color-graphite);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--color-ash);
+        }
+
+        /* Help Info Icon & Tooltip */
+        .info-help {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 1px solid var(--color-ash);
+            color: var(--color-ash);
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: help;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        .info-help:hover {
+            border-color: var(--color-bone);
+            color: var(--color-bone);
+        }
+
+        .info-tooltip {
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%) translateY(5px);
+            width: 180px;
+            background: var(--surface-smoke);
+            border: 1px solid var(--color-graphite);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--color-bone);
+            pointer-events: none;
+            opacity: 0;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            text-transform: none;
+            letter-spacing: normal;
+        }
+
+        .info-help:hover .info-tooltip {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* Mobile Responsiveness */
+        @media (max-width: 768px) {
+            .tooltip { display: none !important; }
+
+            #header-panel {
+                width: calc(100% - 20px);
+                left: 10px;
+                top: 10px;
+                padding: 16px;
+                max-height: 40vh;
+                overflow-y: auto;
+                z-index: 1001;
+            }
+            #header-panel h1 { font-size: 18px; }
+            #header-panel .subtitle { display: none; }
+            
+            #controls-panel, #legend-panel, #stats-panel {
+                width: 100% !important;
+                left: 0 !important;
+                right: 0 !important;
+                top: 0 !important;
+                bottom: 70px !important;
+                border-radius: 0 !important;
+                padding: 20px !important;
+                transform: translateY(100%) !important;
+                z-index: 1001;
+            }
+
+            #controls-panel:not(.collapsed), 
+            #legend-panel:not(.collapsed), 
+            #stats-panel:not(.collapsed) {
+                transform: translateY(0) !important;
+            }
+
+            /* Detail Sidebar full screen on mobile */
+            #detail-sidebar {
+                width: 100%;
+                top: 0; right: 0; bottom: 0;
+                border-radius: 0;
+                transform: translateX(100%);
+                z-index: 2000;
+            }
+            #detail-sidebar.active { transform: translateX(0); }
+
+            /* Bottom Nav Toggles for Mobile */
+            .toggle-btn {
+                position: fixed !important;
+                bottom: 10px !important;
+                width: 54px !important;
+                height: 54px !important;
+                border-radius: 27px !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                transform: none !important;
+                z-index: 3000 !important;
+                background: var(--color-bone) !important;
+                color: var(--surface-void) !important;
+                border: none !important;
+                box-shadow: 0 -2px 10px rgba(0,0,0,0.3) !important;
+            }
+
+            #header-toggle { left: 10px !important; }
+            #stats-toggle { left: 74px !important; }
+            #controls-toggle { right: 74px !important; }
+            #legend-toggle { right: 10px !important; }
+
+            .toggle-btn.active {
+                background: var(--color-lilac-haze) !important;
+                color: var(--surface-void) !important;
+            }
+
+            /* Route Finder stack on mobile */
+            #route-finder-section > div { flex-direction: column; }
+            #route-finder-section input { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+        <div class="loader-ring"></div>
+        <div class="eyebrow" style="margin-bottom: 0;">Initializing Knowledge Graph</div>
+        <div id="loading-text" style="font-size: 11px; color: var(--color-ash); margin-top: 8px;">Please wait while the web builds...</div>
+    </div>
+
+    <!-- Graph Visual Area (Deck.gl renders here) -->
+    <div id="graph-container"></div>
+
+    <!-- Tooltip -->
+    <div id="tooltip" class="tooltip">
+        <div class="tooltip-title" id="tooltip-title">Article Name</div>
+        <div class="tooltip-cat" id="tooltip-cat">Category</div>
+    </div>
+
+    <!-- UI Panel: Title and Search -->
+    <div id="header-panel" class="panel glass collapsed">
+        <div class="eyebrow">Wikipedia Knowledge Web</div>
+        <h1>
+            <svg style="width:20px; height:20px; fill:currentColor; margin-top:2px" viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/>
+            </svg>
+            Wiki Graph Visualizer
+        </h1>
+        <div class="subtitle">An interactive Deck.gl + Graphology network visualization</div>
+        <div class="search-container">
+            <svg class="search-icon" viewBox="0 0 24 24">
+                <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+            </svg>
+            <input type="text" class="search-input" id="search-box" placeholder="Search articles..." list="article-list">
+        </div>
+
+        <!-- Route Finder Section -->
+        <div id="route-finder-section" style="margin-top: 16px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--color-graphite); padding-top: 16px;">
+            <div class="eyebrow" style="margin-bottom: 4px;">Route Finder</div>
+            <div style="display: flex; gap: 8px;">
+                <input type="text" class="search-input" id="route-start" placeholder="Start Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
+                <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px;" list="article-list">
+            </div>
+            <button id="find-route-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; background: var(--color-bone); color: var(--surface-void); border: none; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                <span>Find Shortest Path</span>
+                <div class="mini-loader" id="route-loader"></div>
+            </button>
+            <div id="route-result-container" style="margin-top: 4px; display: none;">
+                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
+                <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
+            </div>
+        </div>
+
+        <datalist id="article-list"></datalist>
+    </div>
+
+    <!-- UI Panel: Stats -->
+    <div id="stats-panel" class="panel glass collapsed">
+        <div class="stat-item">Articles: <span id="stat-nodes">-</span></div>
+        <div class="stat-item">Links: <span id="stat-links">-</span></div>
+        <div class="stat-item">Most Referenced: <span id="stat-hub" style="color: var(--color-bone); font-weight: 500;">-</span></div>
+    </div>
+
+    <!-- UI Panel: Simulation Speed/Controls -->
+    <div id="controls-panel" class="panel glass collapsed">
+        <div class="legend-title" style="margin-top: 4px; margin-bottom: 16px; padding-right: 20px;">Controls</div>
+        
+        <!-- Background Links Visibility Toggle -->
+        <div class="control-group" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="color: white; font-weight: 500; font-size: 12.5px;">Show Background Links</span>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Toggles display of the global network connections.</div>
+                </div>
+            </div>
+            <label class="switch">
+                <input type="checkbox" id="background-links-toggle" checked style="opacity: 0; width: 0; height: 0;">
+                <span class="slider-toggle"></span>
+            </label>
+        </div>
+
+        <div class="control-group">
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Link Density</span>
+                    <span id="density-val">10</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Controls how many connections are loaded in the sidebar details.</div>
+                </div>
+            </div>
+            <input type="range" class="control-slider" id="slider-density" min="1" max="50" value="10">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Layout spring</span>
+                    <span id="dist-val">120</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Transitions between pre-relaxed coordinate files (Link Distance).</div>
+                </div>
+            </div>
+            <input type="range" class="control-slider" id="slider-distance" min="30" max="800" value="120">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Layout gravity</span>
+                    <span id="gravity-val">0.05</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Transitions between pre-relaxed coordinate files (Link Gravity).</div>
+                </div>
+            </div>
+            <input type="range" class="control-slider" id="slider-gravity" min="0" max="0.5" step="0.01" value="0.05">
+        </div>
+        <div class="control-group">
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Node Size Scale</span>
+                    <span id="size-val">1.0</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Multiplies the radius of all nodes.</div>
+                </div>
+            </div>
+            <input type="range" class="control-slider" id="slider-size" min="0.2" max="4.0" step="0.1" value="1.0">
+        </div>
+    </div>
+
+    <!-- UI Panel: Legend -->
+    <div id="legend-panel" class="panel glass collapsed">
+        <div class="legend-title">Categories</div>
+        <div id="legend-list"></div>
+    </div>
+
+    <!-- Panel Toggles -->
+    <button id="header-toggle" class="toggle-btn"><span class="icon">🔍</span></button>
+    <button id="stats-toggle" class="toggle-btn"><span class="icon">📊</span></button>
+    <button id="controls-toggle" class="toggle-btn"><span class="icon">⚙️</span></button>
+    <button id="legend-toggle" class="toggle-btn"><span class="icon">🏷️</span></button>
+
+    <!-- Right Detail Sidebar -->
+    <div id="detail-sidebar">
+        <button class="close-btn" id="sidebar-close-btn">×</button>
+        <div class="sidebar-header">
+            <div class="node-category-tag" id="sidebar-category">Category</div>
+            <h2 class="node-title" id="sidebar-title">Article Title</h2>
+        </div>
+        <div class="sidebar-meta">
+            <div>Views: <span class="meta-val" id="sidebar-views">-</span></div>
+            <div>Inbound: <span class="meta-val" id="sidebar-inbound">-</span></div>
+            <div>Outbound: <span class="meta-val" id="sidebar-outbound">-</span></div>
+        </div>
+        <p class="node-description" id="sidebar-snippet">Article snippet description...</p>
+        <div class="sidebar-section">
+            <h3 class="section-title">Connections</h3>
+            <ul class="connections-list" id="sidebar-connections"></ul>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        // Global variables
+        let db = null;
+        let graphologyWorker = null;
+        
+        let renderLimit = 0;
+        let coordsArray = null; // baseline raw coordinates Float32Array
+        let interpolatedCoords = null; // target active coordinates Float32Array
+        let nodeColorsArray = null; // Float32Array containing colors [r, g, b, a] for all nodes
+        
+        const springs = [0.005, 0.020, 0.070];
+        const gravities = [0.001, 0.005, 0.025];
+        const isLayoutLoaded = new Array(9).fill(false);
+        const layoutDataArrays = new Array(9).fill(null);
+        let coordsScaleFactor = 1.0;
+        
+        let currentDensity = 10;
+        let nodeSizeMultiplier = 1.0;
+        let showBackgroundLinks = true;
+        
+        let selectedNodeIdx = -1;
+        let hoveredNodeIdx = -1;
+        
+        // Background top links structure
+        let numTopLinks = 0;
+        let topLinksSources = null; // Uint32Array of source indices
+        let topLinksTargets = null; // Uint32Array of target indices
+        let topLinksSourceCoords = null; // Float32Array of source coords
+        let topLinksTargetCoords = null; // Float32Array of target coords
+        
+        // Selection / Path lists for LineLayer and ScatterplotLayer
+        let activeEdgesList = [];
+        let activeNodesList = [];
+        
+        // Cache of node titles
+        const nodeTitleCache = {};
+        
+        // Category styles matching CSS
+        const categoryList = [
+            "Biography & People", "Science & Technology", "History & Society",
+            "Art & Culture", "Philosophy & Religion", "Geography & Places", "Other & General"
+        ];
+        const categoryColors = [
+            [168, 120, 138, 255], // biography (pinkish)
+            [88, 143, 168, 255],  // science (blue)
+            [211, 88, 73, 255],   // history (red)
+            [232, 184, 64, 255],  // art (yellow)
+            [116, 140, 105, 255], // philosophy (green)
+            [197, 140, 100, 255], // geography (orange)
+            [195, 174, 214, 255]  // other (purple)
+        ];
+        const categoryCSSNames = [
+            "biography", "science", "history", "art", "philosophy", "geography", "other"
+        ];
+
+        // 1. Setup UI panels toggles
+        function setupPanels() {
+            const panels = [
+                { btn: "header-toggle", panel: "header-panel" },
+                { btn: "stats-toggle", panel: "stats-panel" },
+                { btn: "controls-toggle", panel: "controls-panel" },
+                { btn: "legend-toggle", panel: "legend-panel" }
+            ];
+            panels.forEach(p => {
+                const btnEl = document.getElementById(p.btn);
+                const panelEl = document.getElementById(p.panel);
+                if (btnEl && panelEl) {
+                    btnEl.addEventListener("click", () => {
+                        panelEl.classList.toggle("collapsed");
+                        btnEl.classList.toggle("active");
+                    });
+                    // Auto-open on start
+                    panelEl.classList.remove("collapsed");
+                    btnEl.classList.add("active");
+                }
+            });
+
+            // Close sidebar button
+            const sidebarClose = document.getElementById("sidebar-close-btn");
+            if (sidebarClose) {
+                sidebarClose.addEventListener("click", () => {
+                    document.getElementById("detail-sidebar").classList.remove("active");
+                    selectedNodeIdx = -1;
+                    activeNodesList = [];
+                    activeEdgesList = [];
+                    updateLayers();
+                });
+            }
+
+            // Legend population
+            const legendList = document.getElementById("legend-list");
+            if (legendList) {
+                legendList.innerHTML = "";
+                categoryList.forEach((cat, idx) => {
+                    const item = document.createElement("div");
+                    item.className = "legend-item";
+                    const rgb = categoryColors[idx];
+                    item.innerHTML = `
+                        <div class="legend-left">
+                            <div class="legend-color" style="background-color: rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></div>
+                            <span>${cat}</span>
+                        </div>
+                    `;
+                    legendList.appendChild(item);
+                });
+            }
+        }
+
+        // 2. Initialize Deck.gl
+        const { DeckGL, ScatterplotLayer, LineLayer, OrthographicView, COORDINATE_SYSTEM, LinearInterpolator } = deck;
+        
+        let viewState = {
+            target: [0, 350, 0],
+            zoom: -1.2,
+            minZoom: -8,
+            maxZoom: 6
+        };
+
+        const deckgl = new DeckGL({
+            container: 'graph-container',
+            views: [new OrthographicView({ id: 'ortho', flipY: false })],
+            viewState: viewState,
+            onViewStateChange: ({ viewState: nextViewState }) => {
+                viewState = nextViewState;
+                deckgl.setProps({ viewState });
+            },
+            controller: true,
+            getCursor: ({ isDragging }) => isDragging ? 'grabbing' : 'grab',
+            layers: []
+        });
+
+        // 3. Update Deck.gl Layers
+        function updateLayers() {
+            const layers = [];
+
+            // 1. Background Links Layer (LineLayer)
+            if (showBackgroundLinks && topLinksSourceCoords && topLinksTargetCoords) {
+                layers.push(new LineLayer({
+                    id: 'background-links',
+                    data: {
+                        length: numTopLinks,
+                        attributes: {
+                            getSourcePosition: { value: topLinksSourceCoords, size: 2 },
+                            getTargetPosition: { value: topLinksTargetCoords, size: 2 }
+                        }
+                    },
+                    getColor: [157, 152, 148, 24], // Very transparent ash color
+                    getWidth: 1,
+                    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+                    updateTriggers: {
+                        getSourcePosition: [topLinksSourceCoords],
+                        getTargetPosition: [topLinksTargetCoords]
+                    }
+                }));
+            }
+
+            // 2. Main Nodes Layer (ScatterplotLayer)
+            if (interpolatedCoords && nodeColorsArray) {
+                layers.push(new ScatterplotLayer({
+                    id: 'nodes-layer',
+                    data: {
+                        length: renderLimit,
+                        attributes: {
+                            getPosition: { value: interpolatedCoords, size: 2 },
+                            getFillColor: { value: nodeColorsArray, size: 4 }
+                        }
+                    },
+                    getRadius: 3.5,
+                    radiusMinPixels: 1,
+                    radiusMaxPixels: 12,
+                    radiusScale: nodeSizeMultiplier,
+                    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+                    pickable: true,
+                    autoHighlight: true,
+                    highlightColor: [255, 255, 255, 128],
+                    onHover: handleHover,
+                    onClick: handleNodeClick,
+                    updateTriggers: {
+                        getPosition: [interpolatedCoords],
+                        getFillColor: [nodeColorsArray]
+                    }
+                }));
+            }
+
+            // 3. Highlighted Path / Connections Edges
+            if (activeEdgesList.length > 0) {
+                layers.push(new LineLayer({
+                    id: 'highlighted-links',
+                    data: activeEdgesList,
+                    getSourcePosition: d => d.source,
+                    getTargetPosition: d => d.target,
+                    getColor: [232, 184, 64, 255], // Warm gold
+                    getWidth: 3,
+                    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN
+                }));
+            }
+
+            // 4. Highlighted / Selected Nodes (ScatterplotLayer)
+            if (activeNodesList.length > 0) {
+                layers.push(new ScatterplotLayer({
+                    id: 'highlighted-nodes',
+                    data: activeNodesList,
+                    getPosition: d => d.position,
+                    getFillColor: d => d.color || [232, 184, 64, 255],
+                    getRadius: d => d.radius || 10,
+                    radiusMinPixels: 4,
+                    radiusMaxPixels: 30,
+                    coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+                    pickable: false
+                }));
+            }
+
+            deckgl.setProps({ layers });
+        }
+
+        // Camera animation helper
+        function animateCameraTo(targetX, targetY, targetZoom, durationMs = 750) {
+            viewState = {
+                ...viewState,
+                target: [targetX, targetY, 0],
+                zoom: targetZoom,
+                transitionDuration: durationMs,
+                transitionInterpolator: new LinearInterpolator(['target', 'zoom'])
+            };
+            deckgl.setProps({ viewState });
+        }
+
+        // 4. Bilinear layout coordinates interpolation
+        function getPhysicalSpring() {
+            const slider = document.getElementById("slider-distance");
+            if (!slider) return 0.020;
+            const d = parseFloat(slider.value);
+            if (d <= 120) {
+                return 0.005 + (d - 10) / (120 - 10) * (0.020 - 0.005);
+            } else {
+                return 0.020 + (d - 120) / (200 - 120) * (0.070 - 0.020);
+            }
+        }
+
+        function getPhysicalGravity() {
+            const slider = document.getElementById("slider-gravity");
+            if (!slider) return 0.005;
+            const gr = parseFloat(slider.value);
+            if (gr <= 0.05) {
+                return 0.001 + (gr - 0.0) / (0.05 - 0.0) * (0.005 - 0.001);
+            } else {
+                return 0.005 + (gr - 0.05) / (0.1 - 0.05) * (0.025 - 0.005);
+            }
+        }
+
+        function getActiveGridCell(k, g) {
+            let col = 0;
+            if (k >= springs[1]) col = 1;
+            if (k >= springs[2]) col = 1; // clamp
+            if (k >= springs[1] && k < springs[2]) col = 1;
+            
+            // Adjust column idx
+            let colIdx = 0;
+            if (k >= springs[2]) {
+                colIdx = 1;
+            } else if (k >= springs[1]) {
+                colIdx = 0;
+            } else {
+                colIdx = 0;
+            }
+            
+            if (k <= springs[1]) {
+                col = 0;
+            } else {
+                col = 1;
+            }
+            
+            let row = 0;
+            if (g <= gravities[1]) {
+                row = 0;
+            } else {
+                row = 1;
+            }
+            
+            const k0 = springs[col];
+            const k1 = springs[col + 1];
+            const g0 = gravities[row];
+            const g1 = gravities[row + 1];
+            
+            const tx = Math.max(0, Math.min(1, (k - k0) / (k1 - k0)));
+            const ty = Math.max(0, Math.min(1, (g - g0) / (g1 - g0)));
+            
+            const idx00 = row * 3 + col;
+            const idx10 = row * 3 + (col + 1);
+            const idx01 = (row + 1) * 3 + col;
+            const idx11 = (row + 1) * 3 + (col + 1);
+            
+            return { idx00, idx10, idx01, idx11, tx, ty };
+        }
+
+        function updateBilinearCoords() {
+            if (!coordsArray || !interpolatedCoords) return;
+            
+            const k = getPhysicalSpring();
+            const g = getPhysicalGravity();
+            const cell = getActiveGridCell(k, g);
+            
+            const count = renderLimit;
+            const tx = cell.tx;
+            const ty = cell.ty;
+            const one_minus_tx = 1.0 - tx;
+            const one_minus_ty = 1.0 - ty;
+            
+            const c00 = layoutDataArrays[cell.idx00] || layoutDataArrays[4];
+            const c10 = layoutDataArrays[cell.idx10] || layoutDataArrays[4];
+            const c01 = layoutDataArrays[cell.idx01] || layoutDataArrays[4];
+            const c11 = layoutDataArrays[cell.idx11] || layoutDataArrays[4];
+            
+            if (!c00 || !c10 || !c01 || !c11) return;
+
+            // Interpolate node positions
+            for (let i = 0; i < count * 2; i++) {
+                const v00 = c00[i];
+                const v10 = c10[i];
+                const v01 = c01[i];
+                const v11 = c11[i];
+                
+                interpolatedCoords[i] = one_minus_ty * (one_minus_tx * v00 + tx * v10) + ty * (one_minus_tx * v01 + tx * v11);
+            }
+
+            // Interpolate top links endpoint coordinates
+            if (numTopLinks > 0 && topLinksSources && topLinksTargets) {
+                for (let j = 0; j < numTopLinks; j++) {
+                    const s = topLinksSources[j];
+                    const t = topLinksTargets[j];
+                    
+                    topLinksSourceCoords[j * 2] = interpolatedCoords[s * 2];
+                    topLinksSourceCoords[j * 2 + 1] = interpolatedCoords[s * 2 + 1];
+                    topLinksTargetCoords[j * 2] = interpolatedCoords[t * 2];
+                    topLinksTargetCoords[j * 2 + 1] = interpolatedCoords[t * 2 + 1];
+                }
+            }
+
+            // Update highlighted node/edge layouts
+            updateSelectionVisuals();
+        }
+
+        function getTransformedCoords(nodeIdx) {
+            if (!interpolatedCoords || nodeIdx < 0 || nodeIdx >= renderLimit) return [0, 0];
+            return [interpolatedCoords[nodeIdx * 2], interpolatedCoords[nodeIdx * 2 + 1]];
+        }
+
+        // Resolve title from index (alphabetical ordering offset)
+        async function getNodeIdByIndex(idx) {
+            if (nodeTitleCache[idx]) return nodeTitleCache[idx];
+            
+            // Check if simulated Node_XXXXXXX or crawled title
+            const countRes = await db.query("SELECT id FROM nodes LIMIT 1");
+            if (countRes && countRes[0] && countRes[0].id.startsWith("Node_")) {
+                const idStr = 'Node_' + String(idx + 1).padStart(7, '0');
+                nodeTitleCache[idx] = idStr;
+                return idStr;
+            }
+
+            const res = await db.query(`SELECT id FROM nodes ORDER BY id LIMIT 1 OFFSET ?`, [idx]);
+            if (res && res[0]) {
+                nodeTitleCache[idx] = res[0].id;
+                return res[0].id;
+            }
+            return null;
+        }
+
+        // Highlight active nodes/edges
+        let activePathIndices = [];
+        let connectedNodeIndices = [];
+
+        function updateSelectionVisuals() {
+            activeNodesList = [];
+            activeEdgesList = [];
+
+            if (selectedNodeIdx !== -1) {
+                const [sx, sy] = getTransformedCoords(selectedNodeIdx);
+                // Highlight selected node
+                activeNodesList.push({
+                    position: [sx, sy],
+                    color: [232, 184, 64, 255],
+                    radius: 12
+                });
+
+                // Highlight neighbors
+                connectedNodeIndices.forEach(idx => {
+                    const [nx, ny] = getTransformedCoords(idx);
+                    activeNodesList.push({
+                        position: [nx, ny],
+                        color: [255, 255, 255, 255],
+                        radius: 8
+                    });
+
+                    activeEdgesList.push({
+                        source: [sx, sy],
+                        target: [nx, ny]
+                    });
+                });
+            }
+
+            if (activePathIndices.length > 0) {
+                // Highlight route chain
+                for (let i = 0; i < activePathIndices.length; i++) {
+                    const idx = activePathIndices[i];
+                    const [px, py] = getTransformedCoords(idx);
+                    activeNodesList.push({
+                        position: [px, py],
+                        color: i === 0 ? [211, 88, 73, 255] : (i === activePathIndices.length - 1 ? [88, 143, 168, 255] : [232, 184, 64, 255]),
+                        radius: i === 0 || i === activePathIndices.length - 1 ? 14 : 10
+                    });
+
+                    if (i < activePathIndices.length - 1) {
+                        const nextIdx = activePathIndices[i + 1];
+                        const [npx, npy] = getTransformedCoords(nextIdx);
+                        activeEdgesList.push({
+                            source: [px, py],
+                            target: [npx, npy]
+                        });
+                    }
+                }
+            }
+
+            updateLayers();
+        }
+
+        // Hover handling (tooltip)
+        function handleHover(info) {
+            const tooltip = document.getElementById("tooltip");
+            if (info.index >= 0) {
+                hoveredNodeIdx = info.index;
+                const catIdx = hoveredNodeIdx % 7;
+                
+                // Show tooltip
+                (async () => {
+                    const title = await getNodeIdByIndex(hoveredNodeIdx);
+                    document.getElementById("tooltip-title").textContent = title;
+                    const catTag = document.getElementById("tooltip-cat");
+                    catTag.textContent = categoryList[catIdx];
+                    catTag.style.borderColor = `rgba(${categoryColors[catIdx].join(',')})`;
+                    catTag.style.color = `rgb(${categoryColors[catIdx].slice(0, 3).join(',')})`;
+                })();
+
+                tooltip.style.opacity = 1;
+                tooltip.style.left = `${info.x + 15}px`;
+                tooltip.style.top = `${info.y + 15}px`;
+            } else {
+                hoveredNodeIdx = -1;
+                tooltip.style.opacity = 0;
+            }
+        }
+
+        // Selection handling
+        async function handleNodeClick(info) {
+            if (info.index >= 0) {
+                await selectNode(info.index);
+            }
+        }
+
+        async function selectNode(nodeIndex) {
+            if (nodeIndex < 0 || nodeIndex >= renderLimit) return;
+            selectedNodeIdx = nodeIndex;
+            activePathIndices = []; // clear route highlights
+
+            const nodeId = await getNodeIdByIndex(nodeIndex);
+            if (!nodeId) return;
+
+            const [sx, sy] = getTransformedCoords(nodeIndex);
+            
+            // Animate viewState target zoom center
+            animateCameraTo(sx, sy, Math.max(viewState.zoom, 1.0));
+
+            // Load and render details in sidebar
+            await showNodeDetails(nodeId);
+        }
+
+        async function showNodeDetails(nodeId) {
+            const sidebar = document.getElementById("detail-sidebar");
+            const nodeIndex = parseInt(nodeId.split('_')[1]) - 1; // rowid is index + 1 if Node_ format
+            
+            let rowid = nodeIndex + 1;
+            if (isNaN(rowid) || rowid <= 0) {
+                // Crawled title case: lookup rowid
+                const rRes = await db.query("SELECT rowid FROM nodes WHERE id = ?", [nodeId]);
+                if (rRes && rRes[0]) rowid = rRes[0].rowid;
+            }
+
+            const rows = await db.query('SELECT category, views, inDegree, outDegree, snippet FROM nodes WHERE rowid = ?', [rowid]);
+            if (!rows || rows.length === 0) return;
+
+            const n = rows[0];
+            const catIdx = (rowid - 1) % 7;
+
+            // Populate text
+            document.getElementById("sidebar-title").textContent = nodeId;
+            const categoryTag = document.getElementById("sidebar-category");
+            categoryTag.textContent = n.category || categoryList[catIdx];
+            categoryTag.style.borderColor = `rgba(${categoryColors[catIdx].join(',')})`;
+            categoryTag.style.color = `rgb(${categoryColors[catIdx].slice(0, 3).join(',')})`;
+
+            document.getElementById("sidebar-views").textContent = n.views ? n.views.toLocaleString() : "0";
+            document.getElementById("sidebar-inbound").textContent = n.inDegree || "0";
+            document.getElementById("sidebar-outbound").textContent = n.outDegree || "0";
+            document.getElementById("sidebar-snippet").textContent = n.snippet || "No description available.";
+
+            // Load connections list
+            const linksResult = await db.query(`
+                SELECT target, context FROM links WHERE source = ? LIMIT ?
+            `, [nodeId, currentDensity]);
+
+            connectedNodeIndices = [];
+            const connListEl = document.getElementById("sidebar-connections");
+            connListEl.innerHTML = "";
+
+            if (linksResult && linksResult.length > 0) {
+                for (let l of linksResult) {
+                    // Find index of target in nodes
+                    const tRes = await db.query("SELECT rowid FROM nodes WHERE id = ?", [l.target]);
+                    if (tRes && tRes[0]) {
+                        const targetIdx = tRes[0].rowid - 1;
+                        connectedNodeIndices.push(targetIdx);
+
+                        const item = document.createElement("li");
+                        item.className = "connection-item";
+                        
+                        const tCatIdx = targetIdx % 7;
+                        
+                        item.innerHTML = `
+                            <div class="connection-main">
+                                <span class="conn-name" style="color:var(--color-bone); font-weight:500;">${l.target}</span>
+                                <span class="conn-cat">${categoryList[tCatIdx]}</span>
+                            </div>
+                        `;
+
+                        // Add contextual snippet if exists
+                        if (l.context && l.context.trim().length > 0) {
+                            const ctxEl = document.createElement("div");
+                            ctxEl.className = "connection-context";
+                            ctxEl.textContent = l.context;
+                            ctxEl.onclick = (e) => {
+                                e.stopPropagation();
+                                ctxEl.classList.toggle("expanded");
+                            };
+                            item.appendChild(ctxEl);
+                        }
+
+                        // Navigation onclick
+                        item.addEventListener("click", () => {
+                            selectNode(targetIdx);
+                        });
+
+                        connListEl.appendChild(item);
+                    }
+                }
+
+                // Feed active subgraph to Graphology Web Worker
+                graphologyWorker.postMessage({
+                    type: 'add_nodes_edges',
+                    data: {
+                        nodes: [
+                            { id: nodeId, category: n.category, views: n.views, inDegree: n.inDegree, outDegree: n.outDegree, snippet: n.snippet },
+                            ...linksResult.map((l, index) => ({ id: l.target, category: categoryList[connectedNodeIndices[index] % 7] }))
+                        ],
+                        links: linksResult.map(l => ({ source: nodeId, target: l.target }))
+                    }
+                });
+            } else {
+                connListEl.innerHTML = `<div style="font-size:12px; color:var(--color-ash); padding:10px; text-align:center;">No connections discovered.</div>`;
+            }
+
+            sidebar.classList.add("active");
+            updateSelectionVisuals();
+        }
+
+        // 5. Route Pathfinder solver using SQLite + Graphology Worker
+        async function runBidirectionalBFS(startId, endId) {
+            if (startId === endId) return [startId];
+
+            const startPreds = new Map([[startId, null]]);
+            const endPreds = new Map([[endId, null]]);
+
+            let startFrontier = [startId];
+            let endFrontier = [endId];
+
+            const maxDepth = 6;
+            let depth = 0;
+
+            const allFetchedLinks = [];
+            const allFetchedNodes = new Set([startId, endId]);
+
+            while (startFrontier.length > 0 && endFrontier.length > 0 && depth < maxDepth) {
+                const nextStartFrontier = [];
+                const queryNodes = startFrontier;
+                const placeholders = queryNodes.map(() => '?').join(',');
+                
+                const result = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholders}) OR target IN (${placeholders})`, [...queryNodes, ...queryNodes]);
+                const rows = (result && result[0] && result[0].values) || [];
+                
+                for (const [src, tgt] of rows) {
+                    allFetchedLinks.push({ source: src, target: tgt });
+                    allFetchedNodes.add(src);
+                    allFetchedNodes.add(tgt);
+
+                    for (const [curr, neigh] of [[src, tgt], [tgt, src]]) {
+                        if (queryNodes.includes(curr)) {
+                            if (!startPreds.has(neigh)) {
+                                startPreds.set(neigh, curr);
+                                nextStartFrontier.push(neigh);
+                                if (endPreds.has(neigh)) {
+                                    // Found meeting point. Load nodes/links into Graphology Worker!
+                                    await loadPathNodesToWorker(allFetchedNodes, allFetchedLinks);
+                                    
+                                    // Solved! Let the Graphology worker assemble/verify path
+                                    return new Promise((resolve) => {
+                                        const routeSolverHandler = (e) => {
+                                            if (e.data.type === 'path_result' && e.data.startId === startId && e.data.endId === endId) {
+                                                graphologyWorker.removeEventListener('message', routeSolverHandler);
+                                                resolve(e.data.path);
+                                            }
+                                        };
+                                        graphologyWorker.addEventListener('message', routeSolverHandler);
+                                        graphologyWorker.postMessage({
+                                            type: 'find_path',
+                                            data: { startId, endId }
+                                        });
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                startFrontier = nextStartFrontier;
+                depth++;
+
+                if (startFrontier.length === 0 || depth >= maxDepth) break;
+
+                // Expand end frontier backwards
+                const nextEndFrontier = [];
+                const qNodes = endFrontier;
+                const ph = qNodes.map(() => '?').join(',');
+                
+                const res = await db.exec(`SELECT source, target FROM links WHERE source IN (${ph}) OR target IN (${ph})`, [...qNodes, ...qNodes]);
+                const rRows = (res && res[0] && res[0].values) || [];
+                
+                for (const [src, tgt] of rRows) {
+                    allFetchedLinks.push({ source: src, target: tgt });
+                    allFetchedNodes.add(src);
+                    allFetchedNodes.add(tgt);
+
+                    for (const [curr, neigh] of [[tgt, src], [src, tgt]]) {
+                        if (qNodes.includes(curr)) {
+                            if (!endPreds.has(neigh)) {
+                                endPreds.set(neigh, curr);
+                                nextEndFrontier.push(neigh);
+                                if (startPreds.has(neigh)) {
+                                    await loadPathNodesToWorker(allFetchedNodes, allFetchedLinks);
+                                    
+                                    return new Promise((resolve) => {
+                                        const routeSolverHandler = (e) => {
+                                            if (e.data.type === 'path_result' && e.data.startId === startId && e.data.endId === endId) {
+                                                graphologyWorker.removeEventListener('message', routeSolverHandler);
+                                                resolve(e.data.path);
+                                            }
+                                        };
+                                        graphologyWorker.addEventListener('message', routeSolverHandler);
+                                        graphologyWorker.postMessage({
+                                            type: 'find_path',
+                                            data: { startId, endId }
+                                        });
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                endFrontier = nextEndFrontier;
+                depth++;
+            }
+            return null;
+        }
+
+        async function loadPathNodesToWorker(nodesSet, linksList) {
+            const nodesList = [];
+            for (let id of nodesSet) {
+                const rRes = await db.query("SELECT rowid, category FROM nodes WHERE id = ?", [id]);
+                let rIdx = 0;
+                let cat = "Other & General";
+                if (rRes && rRes[0]) {
+                    rIdx = rRes[0].rowid - 1;
+                    cat = rRes[0].category;
+                }
+                nodesList.push({ id, category: cat, categoryIdx: rIdx % 7 });
+            }
+            
+            graphologyWorker.postMessage({
+                type: 'add_nodes_edges',
+                data: {
+                    nodes: nodesList,
+                    links: linksList
+                }
+            });
+        }
+
+        // Setup Pathfinder events
+        function setupPathfinder() {
+            const findRouteBtn = document.getElementById("find-route-btn");
+            const routeStart = document.getElementById("route-start");
+            const routeEnd = document.getElementById("route-end");
+            const routeContainer = document.getElementById("route-result-container");
+            const routePath = document.getElementById("route-text-path");
+            const loader = document.getElementById("route-loader");
+
+            findRouteBtn.addEventListener("click", async () => {
+                const startId = routeStart.value.trim();
+                const endId = routeEnd.value.trim();
+
+                if (!startId || !endId) {
+                    alert("Please enter both Start and End Article IDs.");
+                    return;
+                }
+
+                findRouteBtn.disabled = true;
+                loader.style.display = "block";
+                routeContainer.style.display = "none";
+
+                try {
+                    const path = await runBidirectionalBFS(startId, endId);
+                    if (path) {
+                        routePath.innerHTML = "";
+                        path.forEach((nodeId, idx) => {
+                            const step = document.createElement("div");
+                            step.className = "connection-item";
+                            step.style.padding = "8px 12px";
+                            step.style.borderBottom = "1px solid var(--color-graphite)";
+                            step.innerHTML = `<div class="connection-main"><span style="color:var(--color-ash); font-family:var(--font-geist);">${idx+1}.</span> <strong style="color:var(--color-bone); margin-left:4px;">${nodeId}</strong></div>`;
+                            
+                            step.onclick = async () => {
+                                const tRes = await db.query("SELECT rowid FROM nodes WHERE id = ?", [nodeId]);
+                                if (tRes && tRes[0]) {
+                                    await selectNode(tRes[0].rowid - 1);
+                                }
+                            };
+                            routePath.appendChild(step);
+                        });
+                        routeContainer.style.display = "block";
+
+                        // Highlight the path on the canvas!
+                        activePathIndices = [];
+                        for (let id of path) {
+                            const tRes = await db.query("SELECT rowid FROM nodes WHERE id = ?", [id]);
+                            if (tRes && tRes[0]) {
+                                activePathIndices.push(tRes[0].rowid - 1);
+                            }
+                        }
+                        
+                        updateSelectionVisuals();
+
+                        // Center camera on start node
+                        if (activePathIndices.length > 0) {
+                            const [start_x, start_y] = getTransformedCoords(activePathIndices[0]);
+                            animateCameraTo(start_x, start_y, 1.2);
+                        }
+                    } else {
+                        alert("No link path found between these articles.");
+                    }
+                } catch (err) {
+                    console.error("BFS Pathfinder Error:", err);
+                    alert("Error solving path: " + err.message);
+                } finally {
+                    findRouteBtn.disabled = false;
+                    loader.style.display = "none";
+                }
+            });
+        }
+
+        // 6. DB Connection, coordinate loader, and Graphology initialization
+        async function initSQLiteVFS() {
+            const loadingText = document.getElementById("loading-text");
+            loadingText.textContent = "Connecting to SQLite Knowledge Database...";
+            
+            try {
+                // Try wiki_simulation.db first, fall back to wiki_graph.db
+                let dbUrl = "/test_scrape/wiki_simulation.db";
+                try {
+                    const checkRes = await fetch(dbUrl, { method: "HEAD" });
+                    if (!checkRes.ok) throw new Error("wiki_simulation.db not found, falling back.");
+                } catch(e) {
+                    dbUrl = "/test_scrape/wiki_graph.db";
+                }
+
+                console.log(`Connecting to VFS SQLite DB: ${dbUrl}`);
+                
+                const worker = await createDbWorker(
+                    [{
+                        from: "inline",
+                        config: {
+                            serverMode: "full",
+                            url: dbUrl,
+                            requestChunkSize: 4096
+                        }
+                    }],
+                    "/test_scrape/libs/sqlite.worker.js",
+                    "/test_scrape/libs/sql-wasm.wasm"
+                );
+                db = worker.db;
+                console.log("SQLite VFS connected successfully.");
+            } catch (err) {
+                console.error("VFS Connection Failed:", err);
+                loadingText.innerHTML = `<span style="color:#d35849">VFS Connection Error: ${err.message}. Make sure Python log_server.py is running.</span>`;
+                throw err;
+            }
+        }
+
+        async function initGraphEngine() {
+            const loadingText = document.getElementById("loading-text");
+            loadingText.textContent = "Loading Web Workers and structures...";
+
+            // Initialize Graphology Worker
+            graphologyWorker = new Worker('graphology_worker.js');
+            graphologyWorker.postMessage({ type: 'init' });
+
+            // Zero-copy Web Worker to load 64MB coordinates.bin in-place
+            const workerCode = `
+                self.onmessage = async function(e) {
+                    const { binUrl } = e.data;
+                    try {
+                        self.postMessage({ type: 'progress', msg: 'Fetching 64MB binary coordinates...' });
+                        const response = await fetch(binUrl);
+                        if (!response.ok) throw new Error('HTTP status ' + response.status);
+                        
+                        const buffer = await response.arrayBuffer();
+                        const view = new DataView(buffer);
+                        const count = view.getUint32(0, true);
+                        
+                        self.postMessage({ type: 'progress', msg: 'Parsing coordinates array...' });
+                        const coords = new Float32Array(buffer, 4, count * 2);
+                        
+                        // Normalization to fits [-1800, 1800]
+                        let maxVal = 0;
+                        for (let i = 0; i < count * 2; i++) {
+                            const val = Math.abs(coords[i]);
+                            if (val > maxVal) maxVal = val;
+                        }
+                        const scale = maxVal > 0 ? 1800.0 / maxVal : 1.0;
+                        for (let i = 0; i < count * 2; i++) {
+                            coords[i] *= scale;
+                        }
+                        
+                        self.postMessage({ 
+                            type: 'done', 
+                            count: count,
+                            coords: coords.buffer,
+                            scale: scale
+                        }, [coords.buffer]);
+                    } catch (err) {
+                        self.postMessage({ type: 'error', msg: err.message });
+                    }
+                };
+            `;
+            const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+            const binWorker = new Worker(URL.createObjectURL(workerBlob));
+
+            binWorker.onmessage = async function(e) {
+                if (e.data.type === 'progress') {
+                    loadingText.textContent = e.data.msg;
+                } else if (e.data.type === 'error') {
+                    loadingText.innerHTML = `<span style="color:#d35849">Loader Error: ${e.data.msg}</span>`;
+                } else if (e.data.type === 'done') {
+                    loadingText.textContent = "Setting up Deck.gl canvas...";
+                    
+                    renderLimit = e.data.count;
+                    coordsArray = new Float32Array(e.data.coords);
+                    coordsScaleFactor = e.data.scale;
+                    
+                    interpolatedCoords = new Float32Array(renderLimit * 2);
+                    interpolatedCoords.set(coordsArray);
+
+                    // Pre-generate colors buffer for nodes ScatterplotLayer (modulo-7 category map)
+                    nodeColorsArray = new Uint8Array(renderLimit * 4);
+                    for (let i = 0; i < renderLimit; i++) {
+                        const catIdx = i % 7;
+                        const rgb = categoryColors[catIdx];
+                        nodeColorsArray[i * 4] = rgb[0];
+                        nodeColorsArray[i * 4 + 1] = rgb[1];
+                        nodeColorsArray[i * 4 + 2] = rgb[2];
+                        nodeColorsArray[i * 4 + 3] = rgb[3];
+                    }
+
+                    // Feed node bounds and count to UI
+                    const nodeCountRes = await db.query("SELECT count(*) as count FROM nodes");
+                    const linkCountRes = await db.query("SELECT count(*) as count FROM links");
+                    const hubRes = await db.query("SELECT id FROM nodes ORDER BY inDegree DESC LIMIT 1");
+
+                    document.getElementById("stat-nodes").textContent = nodeCountRes[0].count.toLocaleString();
+                    document.getElementById("stat-links").textContent = linkCountRes[0].count.toLocaleString();
+                    if (hubRes && hubRes[0]) {
+                        document.getElementById("stat-hub").textContent = hubRes[0].id;
+                    }
+
+                    // Initialize autocomplete search box
+                    await setupAutocomplete();
+
+                    // Load top links for background rendering
+                    await loadTopLinks();
+
+                    // Load all 9 layout grids for bilinear transitions (Optional/Async)
+                    loadLayoutGridsAsync();
+
+                    // Render Deck.gl layers
+                    updateBilinearCoords();
+                    updateLayers();
+
+                    // Hide Loading screen
+                    document.getElementById("loading-screen").style.opacity = "0";
+                    setTimeout(() => {
+                        document.getElementById("loading-screen").style.display = "none";
+                    }, 600);
+                }
+            };
+
+            binWorker.postMessage({ binUrl: new URL('/test_scrape/coordinates.bin', window.location.href).href });
+        }
+
+        async function setupAutocomplete() {
+            const nodes = await db.query("SELECT id FROM nodes ORDER BY views DESC LIMIT 2000");
+            const datalist = document.getElementById("article-list");
+            datalist.innerHTML = "";
+            if (nodes) {
+                nodes.forEach(n => {
+                    const opt = document.createElement("option");
+                    opt.value = n.id;
+                    datalist.appendChild(opt);
+                });
+            }
+
+            // Bind search box input
+            const searchBox = document.getElementById("search-box");
+            searchBox.addEventListener("change", async () => {
+                const title = searchBox.value.trim();
+                const rRes = await db.query("SELECT rowid FROM nodes WHERE id = ?", [title]);
+                if (rRes && rRes[0]) {
+                    await selectNode(rRes[0].rowid - 1);
+                }
+            });
+        }
+
+        async function loadTopLinks() {
+            try {
+                console.log("Loading top_links.bin...");
+                const res = await fetch("/test_scrape/top_links.bin");
+                if (!res.ok) throw new Error("HTTP status " + res.status);
+                
+                const buffer = await res.arrayBuffer();
+                numTopLinks = buffer.byteLength / 8;
+                console.log(`Loaded ${numTopLinks.toLocaleString()} top links.`);
+                
+                const view = new DataView(buffer);
+                topLinksSources = new Uint32Array(numTopLinks);
+                topLinksTargets = new Uint32Array(numTopLinks);
+                
+                topLinksSourceCoords = new Float32Array(numTopLinks * 2);
+                topLinksTargetCoords = new Float32Array(numTopLinks * 2);
+
+                for (let i = 0; i < numTopLinks; i++) {
+                    topLinksSources[i] = view.getUint32(i * 8, true);
+                    topLinksTargets[i] = view.getUint32(i * 8 + 4, true);
+                }
+            } catch (err) {
+                console.error("Failed to load top_links.bin:", err);
+            }
+        }
+
+        async function loadLayoutGridsAsync() {
+            const gridPaths = [
+                "/test_scrape/coords_k0_g0.bin", "/test_scrape/coords_k0_g1.bin", "/test_scrape/coords_k0_g2.bin",
+                "/test_scrape/coords_k1_g0.bin", "/test_scrape/coordinates.bin", "/test_scrape/coords_k1_g2.bin",
+                "/test_scrape/coords_k2_g0.bin", "/test_scrape/coords_k2_g1.bin", "/test_scrape/coords_k2_g2.bin"
+            ];
+            
+            for (let i = 0; i < 9; i++) {
+                if (i === 4) {
+                    layoutDataArrays[4] = coordsArray;
+                    isLayoutLoaded[4] = true;
+                    continue;
+                }
+                
+                (async (idx) => {
+                    try {
+                        const res = await fetch(gridPaths[idx]);
+                        if (res.ok) {
+                            const buffer = await res.arrayBuffer();
+                            const view = new DataView(buffer);
+                            const count = view.getUint32(0, true);
+                            const arr = new Float32Array(buffer, 4, count * 2);
+                            
+                            // Normalize to coordinates.bin scale
+                            for (let j = 0; j < count * 2; j++) {
+                                arr[j] *= coordsScaleFactor;
+                            }
+                            
+                            layoutDataArrays[idx] = arr;
+                            isLayoutLoaded[idx] = true;
+                            console.log(`Grid layout ${idx} loaded async.`);
+                        }
+                    } catch (e) {
+                        console.error(`Failed to load grid layout ${idx}:`, e);
+                    }
+                })(i);
+            }
+        }
+
+        // Bind layout slider inputs
+        function bindSliders() {
+            const sizeSlider = document.getElementById("slider-size");
+            const sizeVal = document.getElementById("size-val");
+            sizeSlider.addEventListener("input", (e) => {
+                nodeSizeMultiplier = parseFloat(e.target.value);
+                sizeVal.textContent = nodeSizeMultiplier.toFixed(1);
+                updateLayers();
+            });
+
+            const densitySlider = document.getElementById("slider-density");
+            const densityVal = document.getElementById("density-val");
+            densitySlider.addEventListener("input", (e) => {
+                currentDensity = parseInt(e.target.value);
+                densityVal.textContent = currentDensity;
+                if (selectedNodeIdx !== -1) {
+                    getNodeIdByIndex(selectedNodeIdx).then(showNodeDetails);
+                }
+            });
+
+            const distSlider = document.getElementById("slider-distance");
+            const distVal = document.getElementById("dist-val");
+            distSlider.addEventListener("input", (e) => {
+                distVal.textContent = e.target.value;
+                updateBilinearCoords();
+                updateLayers();
+            });
+
+            const gravitySlider = document.getElementById("slider-gravity");
+            const gravityVal = document.getElementById("gravity-val");
+            gravitySlider.addEventListener("input", (e) => {
+                gravityVal.textContent = parseFloat(e.target.value).toFixed(2);
+                updateBilinearCoords();
+                updateLayers();
+            });
+
+            const linksToggle = document.getElementById("background-links-toggle");
+            linksToggle.addEventListener("change", (e) => {
+                showBackgroundLinks = e.target.checked;
+                updateLayers();
+            });
+        }
+
+        // Initialize application
+        async function run() {
+            setupPanels();
+            bindSliders();
+            setupPathfinder();
+            
+            try {
+                await initSQLiteVFS();
+                await initGraphEngine();
+            } catch (err) {
+                console.error("Initialization Failed:", err);
+            }
+        }
+
+        window.onload = run;
+    </script>
+</body>
+</html>
