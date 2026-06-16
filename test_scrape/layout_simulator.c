@@ -11,7 +11,7 @@ uint64_t num_links = 0;
 
 // Simulation parameters
 const int num_iterations = 20;
-const float damping = 0.85f;
+const float damping = 0.60f;
 const float max_speed = 50.0f;
 
 int main(int argc, char *argv[]) {

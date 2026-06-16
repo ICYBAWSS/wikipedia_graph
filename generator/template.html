@@ -397,17 +397,126 @@
             background: var(--color-void);
             padding: 6px;
         }
+.connection-item {
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--color-graphite);
+    cursor: pointer;
+    transition: all 0.15s ease-in-out;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--color-ash);
+}
 
-        .connection-item {
-            padding: 10px 14px;
-            font-size: 13px;
-            border-bottom: 1px solid var(--color-graphite);
-            cursor: pointer;
-            transition: all 0.15s ease-in-out;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            color: var(--color-ash);
+.connection-item:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: white;
+}
+
+.connection-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 500;
+}
+
+/* Improved Settings Layout with Tooltips */
+.control-group {
+    margin-bottom: 16px;
+}
+
+.control-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.control-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: white;
+}
+
+.info-help {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    color: var(--color-ash);
+    font-size: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: help;
+    position: relative;
+}
+
+.info-help:hover {
+    background: rgba(255,255,255,0.2);
+    color: white;
+}
+
+.info-tooltip {
+    visibility: hidden;
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2a2a2a;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    width: 200px;
+    font-size: 11px;
+    line-height: 1.4;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    border: 1px solid #444;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.info-help:hover .info-tooltip {
+    visibility: visible;
+    opacity: 1;
+}
+
+.connection-context {
+    font-size: 11.5px;
+    opacity: 0.6;
+    font-style: italic;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.connection-context:hover {
+    opacity: 1;
+}
+
+.connection-context.expanded {
+    -webkit-line-clamp: unset;
+    display: block;
+}
+.connection-tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 4px;
+    text-transform: uppercase;
+}
+
             border-radius: var(--radius-cardssmall);
         }
 
@@ -968,7 +1077,7 @@
         <!-- High Performance Mode Toggle -->
         <div class="control-group" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="color: var(--color-ash); font-weight: 400;">High Performance</span>
+                <span style="color: white; font-weight: 500; font-size: 12.5px;">High Performance</span>
                 <div class="info-help">
                     ?
                     <div class="info-tooltip">Disables collisions and simplifies rendering during movement to maximize responsiveness on large maps.</div>
@@ -983,7 +1092,7 @@
         <!-- Show Links During Interaction Toggle -->
         <div class="control-group" id="group-interaction-links" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="color: var(--color-ash); font-weight: 400;">Show Links During Pan/Zoom</span>
+                <span style="color: var(--color-ash); font-weight: 400; font-size: 12.5px;">Show Links During Pan/Zoom</span>
                 <div class="info-help">
                     ?
                     <div class="info-tooltip">Keeps all links visible while dragging/zooming, but may reduce frame rate.</div>
@@ -996,53 +1105,96 @@
         </div>
 
         <div class="control-group">
-            <div class="control-label">
-                <span>Link Density</span>
-                <span id="density-val">10</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Link Density</span>
+                    <span id="density-val">10</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Controls how many outgoing links are shown per node. Lower is faster.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-density" min="1" max="50" value="10">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Link Distance</span>
-                <span id="dist-val">120</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Link Distance</span>
+                    <span id="dist-val">120</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Sets the preferred length of links. Higher values create a more spread-out graph.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-distance" min="30" max="800" value="120">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Link Strength</span>
-                <span id="strength-val">0.15</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Link Strength</span>
+                    <span id="strength-val">0.15</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">How rigidly nodes maintain their link distance.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-strength" min="0.01" max="0.5" step="0.01" value="0.15">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Charge Strength</span>
-                <span id="charge-val">-200</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Charge Strength</span>
+                    <span id="charge-val">-200</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Negative values cause nodes to repel each other, preventing overlap.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-charge" min="-2000" max="-30" value="-200">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Collision Radius</span>
-                <span id="col-val">20</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Collision Radius</span>
+                    <span id="col-val">20</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">The physical space around each node that others cannot enter.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-collision" min="5" max="60" value="20">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Node Size Scale</span>
-                <span id="size-val">1.0</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Node Size Scale</span>
+                    <span id="size-val">1.0</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Multiplies the radius of all nodes.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-size" min="0.2" max="4.0" step="0.1" value="1.0">
         </div>
         <div class="control-group">
-            <div class="control-label">
-                <span>Gravity Constant</span>
-                <span id="gravity-val">0.05</span>
+            <div class="control-header">
+                <div class="control-label">
+                    <span>Gravity Constant</span>
+                    <span id="gravity-val">0.05</span>
+                </div>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">A global pull towards the center to prevent nodes from drifting away.</div>
+                </div>
             </div>
             <input type="range" class="control-slider" id="slider-gravity" min="0" max="0.5" step="0.01" value="0.05">
+        </div>
         </div>
         <div class="control-group" style="margin-top: 20px; display: none;">
             <button id="save-layout-btn" class="wiki-link-btn" style="margin-top: 0; padding: 8px; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--color-ash);">
@@ -1092,7 +1244,13 @@
         </div>
         
         <div class="sidebar-section">
-            <div class="section-title">Network Neighbors</div>
+            <div class="sidebar-meta" style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
+                <span>Connections</span>
+                <div class="info-help">
+                    ?
+                    <div class="info-tooltip">Articles that link to this one (IN) or are linked from it (OUT). Click the name to navigate, or the text to expand.</div>
+                </div>
+            </div>
             <ul class="connections-list" id="sidebar-connections">
                 <!-- Javascript populated -->
             </ul>
@@ -1479,6 +1637,7 @@
             updateRenderingCache();
             const scale = Math.max(transform.k, 1.2), x = width/2 - d.x*scale, y = height/2 - d.y*scale;
             d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+            
             document.getElementById("sidebar-tag").textContent = d.category;
             document.getElementById("sidebar-tag").style.color = categoryColors[d.category] || "#9d9894";
             document.getElementById("sidebar-title").textContent = d.id;
@@ -1486,6 +1645,47 @@
             document.getElementById("sidebar-inbound").textContent = d.inDegree;
             document.getElementById("sidebar-outbound").textContent = d.outDegree;
             document.getElementById("sidebar-desc").innerHTML = d.snippet || "No excerpt.";
+            document.getElementById("sidebar-wiki-link").href = `https://en.wikipedia.org/wiki/${encodeURIComponent(d.id)}`;
+            
+            // Populate Connections
+            const connList = document.getElementById("sidebar-connections");
+            connList.innerHTML = "";
+            
+            const stmt = db.prepare("SELECT target as id, context, 'out' as type FROM links WHERE source = :id UNION ALL SELECT source as id, context, 'in' as type FROM links WHERE target = :id ORDER BY type DESC");
+            stmt.bind({ ":id": d.id });
+            
+            while (stmt.step()) {
+                const row = stmt.getAsObject();
+                const item = document.createElement("li");
+                item.className = "connection-item";
+                
+                const main = document.createElement("div");
+                main.className = "connection-main";
+                main.innerHTML = `<span>${row.id}</span><span class="connection-tag">${row.type}</span>`;
+                main.onclick = (e) => {
+                    e.stopPropagation();
+                    const s = db.prepare("SELECT * FROM nodes WHERE id = :id");
+                    s.bind({ ":id": row.id });
+                    if (s.step()) selectNode(s.getAsObject());
+                    s.free();
+                };
+                item.appendChild(main);
+
+                if (row.context) {
+                    const ctxDiv = document.createElement("div");
+                    ctxDiv.className = "connection-context";
+                    ctxDiv.textContent = `"${row.context}"`;
+                    ctxDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        ctxDiv.classList.toggle("expanded");
+                    };
+                    item.appendChild(ctxDiv);
+                }
+                
+                connList.appendChild(item);
+            }
+            stmt.free();
+            
             sidebar.classList.add("active");
             if (window.innerWidth > 768) ["controls-panel", "legend-panel", "controls-toggle", "legend-toggle"].forEach(id => document.getElementById(id).style.transform = "translateX(-450px)");
         }
