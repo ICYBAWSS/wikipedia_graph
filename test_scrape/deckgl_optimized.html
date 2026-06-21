@@ -902,6 +902,33 @@
     </style>
 </head>
 <body>
+    <script>
+        (function() {
+            const originalLog = console.log;
+            const originalError = console.error;
+            const logToServer = (level, args) => {
+                const message = Array.from(args).map(arg => 
+                    typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+                ).join(' ');
+                fetch('/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ level, message })
+                }).catch(() => {});
+            };
+            console.log = function() {
+                originalLog.apply(console, arguments);
+                logToServer('INFO', arguments);
+            };
+            console.error = function() {
+                originalError.apply(console, arguments);
+                logToServer('ERROR', arguments);
+            };
+            window.onerror = function(msg, url, line, col, error) {
+                logToServer('ERROR', [`${msg} at ${url}:${line}:${col}`]);
+            };
+        })();
+    </script>
 
     <!-- Loading Screen -->
     <div id="loading-screen">
@@ -1848,12 +1875,12 @@
             
             try {
                 // Try wiki_simulation.db first, fall back to wiki_graph.db
-                let dbUrl = "/test_scrape/wiki_simulation.db";
+                let dbUrl = "/wiki_simulation.db";
                 try {
                     const checkRes = await fetch(dbUrl, { method: "HEAD" });
                     if (!checkRes.ok) throw new Error("wiki_simulation.db not found, falling back.");
                 } catch(e) {
-                    dbUrl = "/test_scrape/wiki_graph.db";
+                    dbUrl = "/wiki_graph.db";
                 }
 
                 console.log(`Connecting to VFS SQLite DB: ${dbUrl}`);
@@ -1867,8 +1894,8 @@
                             requestChunkSize: 4096
                         }
                     }],
-                    "/test_scrape/libs/sqlite.worker.js",
-                    "/test_scrape/libs/sql-wasm.wasm"
+                    "/libs/sqlite.worker.js",
+                    "/libs/sql-wasm.wasm"
                 );
                 db = worker.db;
                 console.log("SQLite VFS connected successfully.");
@@ -1884,7 +1911,7 @@
             loadingText.textContent = "Loading Web Workers and structures...";
 
             // Initialize Graphology Worker
-            graphologyWorker = new Worker('graphology_worker.js');
+            graphologyWorker = new Worker('/graphology_worker.js');
             graphologyWorker.postMessage({ type: 'init' });
 
             // Zero-copy Web Worker to load 64MB coordinates.bin in-place
@@ -1986,7 +2013,7 @@
                 }
             };
 
-            binWorker.postMessage({ binUrl: new URL('/test_scrape/coordinates.bin', window.location.href).href });
+            binWorker.postMessage({ binUrl: new URL('/coordinates.bin', window.location.href).href });
         }
 
         async function setupAutocomplete() {
@@ -2015,14 +2042,15 @@
         async function loadTopLinks() {
             try {
                 console.log("Loading top_links.bin...");
-                const res = await fetch("/test_scrape/top_links.bin");
+                const res = await fetch("/top_links.bin");
                 if (!res.ok) throw new Error("HTTP status " + res.status);
                 
                 const buffer = await res.arrayBuffer();
-                numTopLinks = buffer.byteLength / 8;
+                const view = new DataView(buffer);
+                
+                numTopLinks = view.getUint32(0, true);
                 console.log(`Loaded ${numTopLinks.toLocaleString()} top links.`);
                 
-                const view = new DataView(buffer);
                 topLinksSources = new Uint32Array(numTopLinks);
                 topLinksTargets = new Uint32Array(numTopLinks);
                 
@@ -2030,8 +2058,8 @@
                 topLinksTargetCoords = new Float32Array(numTopLinks * 2);
 
                 for (let i = 0; i < numTopLinks; i++) {
-                    topLinksSources[i] = view.getUint32(i * 8, true);
-                    topLinksTargets[i] = view.getUint32(i * 8 + 4, true);
+                    topLinksSources[i] = view.getUint32(4 + i * 8, true);
+                    topLinksTargets[i] = view.getUint32(4 + i * 8 + 4, true);
                 }
             } catch (err) {
                 console.error("Failed to load top_links.bin:", err);
@@ -2040,9 +2068,9 @@
 
         async function loadLayoutGridsAsync() {
             const gridPaths = [
-                "/test_scrape/coords_k0_g0.bin", "/test_scrape/coords_k0_g1.bin", "/test_scrape/coords_k0_g2.bin",
-                "/test_scrape/coords_k1_g0.bin", "/test_scrape/coordinates.bin", "/test_scrape/coords_k1_g2.bin",
-                "/test_scrape/coords_k2_g0.bin", "/test_scrape/coords_k2_g1.bin", "/test_scrape/coords_k2_g2.bin"
+                "/coords_k0_g0.bin", "/coords_k0_g1.bin", "/coords_k0_g2.bin",
+                "/coords_k1_g0.bin", "/coordinates.bin", "/coords_k1_g2.bin",
+                "/coords_k2_g0.bin", "/coords_k2_g1.bin", "/coords_k2_g2.bin"
             ];
             
             for (let i = 0; i < 9; i++) {
