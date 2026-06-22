@@ -73,15 +73,21 @@ def compile_galaxy_multistage():
         'radius': node_radii.astype(np.float32)
     })
 
-    # --- MULTI-STAGE STEP 1: Core Backbone Extraction (k_core, k=3) ---
-    print("Step 4: Running k-core decomposition (k=3) to extract structural backbone...")
+    # --- MULTI-STAGE STEP 1: Core Backbone Extraction ---
+    print("Step 4: Running k-core decomposition to extract structural backbone...")
     start_kcore = time.time()
     core_df = cugraph.core_number(G)
     core_col = 'core_number' if 'core_number' in core_df.columns else 'values'
     
-    # Identify vertices belonging to core (degree >= 3 within core)
-    backbone_vertices = core_df[core_df[core_col] >= 3]['vertex']
+    # Calculate optimal k-core threshold dynamically (targeting top ~25% of nodes for backbone)
+    core_vals = core_df[core_col].to_pandas()
+    k_threshold = int(core_vals.quantile(0.75))
+    if k_threshold < 3:
+        k_threshold = 3  # fallback to minimum 3
+        
+    backbone_vertices = core_df[core_df[core_col] >= k_threshold]['vertex']
     num_backbone_nodes = len(backbone_vertices)
+    print(f"  Dynamic threshold chosen: k={k_threshold}")
     print(f"  Backbone extracted with {num_backbone_nodes:,} core nodes ({num_backbone_nodes/num_nodes*100:.2f}% of total). ({time.time() - start_kcore:.2f} seconds)")
 
     # Slice edges that exist only within the backbone
@@ -90,6 +96,11 @@ def compile_galaxy_multistage():
         gdf_edges['source'].isin(backbone_vertices) & 
         gdf_edges['destination'].isin(backbone_vertices)
     ]
+    
+    # Free the full graph G to save VRAM before constructing G_backbone
+    print("  Freeing full graph G to conserve VRAM...")
+    del G
+    cp.get_default_memory_pool().free_all_blocks()
     
     G_backbone = cugraph.Graph(directed=False)
     G_backbone.from_cudf_edgelist(
@@ -121,6 +132,10 @@ def compile_galaxy_multistage():
         verbose=True
     )
     print(f"  Backbone simulation complete. ({time.time() - start_backbone_sim:.2f} seconds)")
+    
+    # Clean up backbone graph memory immediately
+    del G_backbone, radius_gdf_backbone, gdf_edges_backbone
+    cp.get_default_memory_pool().free_all_blocks()
 
     # --- PHASE 2 PREPARATION: Gateway Ancestor Mapping ---
     print("Step 6: Running Multi-Source Label Propagation to map peripheral nodes to closest core gateways...")
@@ -218,6 +233,10 @@ def compile_galaxy_multistage():
     cp.get_default_memory_pool().free_all_blocks()
 
     # --- PHASE 2: Pinned Ingestion Simulation ---
+    print("Step 8 [Phase 2]: Reconstructing full cuGraph...")
+    G = cugraph.Graph(directed=False)
+    G.from_cudf_edgelist(gdf_edges, source='source', destination='destination', edge_attr='weight')
+
     print("Step 8 [Phase 2]: Running Pinned Ingestion Simulation (250 iterations total)...")
     start_phase2 = time.time()
     
