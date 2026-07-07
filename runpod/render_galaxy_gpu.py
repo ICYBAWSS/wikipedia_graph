@@ -1,0 +1,363 @@
+import os
+import sys
+import time
+import struct
+import argparse
+import numpy as np
+
+try:
+    import cupy as cp
+    import cudf
+    import datashader as ds
+    import datashader.transfer_functions as tf
+    from datashader.utils import export_image
+except ImportError as e:
+    print("Error: Missing required GPU libraries (cupy, cudf, datashader).")
+    print(f"Details: {e}")
+    print("Please install them or use a RAPIDS-equipped container.")
+    sys.exit(1)
+
+def get_next_output_path(base_name="massive_galaxy_gpu"):
+    i = 1
+    while True:
+        candidate = f"{base_name}{i}.png"
+        if not os.path.exists(candidate):
+            return candidate
+        i += 1
+
+def dim_hex_color(hex_color, factor=0.25):
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    r = max(15, int(r * factor))
+    g = max(15, int(g * factor))
+    b = max(15, int(b * factor))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
+    print("--- GPU-Accelerated Datashader Renderer ---")
+    start_total = time.time()
+    
+    # 1. Read Binary Coordinates
+    print(f"Step 1: Loading raw enriched coordinates from {bin_path}...")
+    start_load = time.time()
+    with open(bin_path, "rb") as f:
+        num_nodes = struct.unpack("I", f.read(4))[0]
+        # Load raw float array using cupy directly to GPU VRAM
+        raw_cp = cp.fromfile(f, dtype=cp.float32)
+        
+    total_floats = len(raw_cp)
+    cols = 5
+    if total_floats % 5 == 0:
+        cols = 5
+    elif total_floats % 4 == 0:
+        cols = 4
+        print("  Warning: Coordinates file has 4 columns (no category data). Coloring will be default.")
+    else:
+        cols = total_floats // num_nodes
+        print(f"  Detected columns per node: {cols}")
+        
+    raw_cp = raw_cp[:num_nodes * cols].reshape(num_nodes, cols)
+    
+    # Move x, y to cuDF
+    df_nodes = cudf.DataFrame({
+        'x': raw_cp[:, 0],
+        'y': raw_cp[:, 1]
+    })
+    
+    if cols >= 5:
+        # Views is column 2, Category ID is column 4
+        df_nodes['views'] = raw_cp[:, 2]
+        df_nodes['category'] = raw_cp[:, 4].astype(np.int32)
+    else:
+        # Default fallback values
+        df_nodes['views'] = cp.zeros(num_nodes, dtype=cp.float32)
+        df_nodes['category'] = cp.zeros(num_nodes, dtype=cp.int32)
+        
+    print(f"  Loaded coordinates for {num_nodes:,} nodes in {time.time() - start_load:.2f}s.")
+    
+    # Distribute the orphan cluster at (0, 0) if any
+    orphan_mask = (df_nodes['x'] == 0.0) & (df_nodes['y'] == 0.0)
+    num_orphans = orphan_mask.sum()
+    if num_orphans > 0:
+        print(f"  Distributing {num_orphans:,} orphans located at (0, 0)...")
+        min_x = float(df_nodes.loc[~orphan_mask, 'x'].min())
+        max_x = float(df_nodes.loc[~orphan_mask, 'x'].max())
+        min_y = float(df_nodes.loc[~orphan_mask, 'y'].min())
+        max_y = float(df_nodes.loc[~orphan_mask, 'y'].max())
+        
+        # Generate random values on GPU
+        df_nodes.loc[orphan_mask, 'x'] = cp.random.uniform(min_x, max_x, int(num_orphans))
+        df_nodes.loc[orphan_mask, 'y'] = cp.random.uniform(min_y, max_y, int(num_orphans))
+
+    # 2. Load Edge List and Map Coordinates
+    print(f"Step 2: Loading edge list from {edges_csv}...")
+    start_edges = time.time()
+    
+    # Check if edges file exists
+    if not os.path.exists(edges_csv):
+        print(f"Error: Edges file {edges_csv} not found. Nodes will be rendered without filaments.")
+        df_lines = None
+    else:
+        # cuDF read CSV is extremely fast on GPU
+        df_edges = cudf.read_csv(edges_csv, compression='gzip', dtype={'source': np.int32, 'target': np.int32})
+        
+        # Limit edges if requested
+        if edge_sample > 0 and len(df_edges) > edge_sample:
+            print(f"  Sampling first {edge_sample:,} edges for filaments (out of {len(df_edges):,} total)...")
+            df_edges = df_edges.head(edge_sample)
+            
+        num_edges = len(df_edges)
+        
+        # Map source and target coordinates using GPU merges
+        df_nodes['vertex'] = cp.arange(num_nodes, dtype=np.int32)
+        
+        edges_coords = df_edges.merge(df_nodes[['vertex', 'x', 'y']], left_on='source', right_on='vertex')
+        edges_coords = edges_coords.rename(columns={'x': 'x_src', 'y': 'y_src'}).drop(columns=['vertex'])
+        
+        # Merge target coordinate columns
+        edges_coords = edges_coords.merge(df_nodes[['vertex', 'x', 'y']], left_on='target', right_on='vertex')
+        edges_coords = edges_coords.rename(columns={'x': 'x_tgt', 'y': 'y_tgt'}).drop(columns=['vertex'])
+        
+        # Convert columns to CuPy arrays for vectorized GPU calculation
+        x_src = cp.asarray(edges_coords['x_src'])
+        y_src = cp.asarray(edges_coords['y_src'])
+        x_tgt = cp.asarray(edges_coords['x_tgt'])
+        y_tgt = cp.asarray(edges_coords['y_tgt'])
+
+        # Compute edge distances on the GPU using pure CuPy to separate short-range and long-range edges
+        dx = x_tgt - x_src
+        dy = y_tgt - y_src
+        dist = cp.sqrt(dx**2 + dy**2)
+        
+        # Bends edges that span > 12% of the maximum edge distance in the graph
+        max_dist = float(dist.max())
+        threshold = max_dist * 0.12
+        
+        # Calculate midpoints (baseline control points)
+        mid_x = (x_src + x_tgt) / 2.0
+        mid_y = (y_src + y_tgt) / 2.0
+        
+        # Apply bending shift toward the coordinate center (0, 0)
+        bend_mask_cp = dist > threshold
+        p1_x = mid_x.copy()
+        p1_y = mid_y.copy()
+        
+        # Pull long-range edges 45% of the way toward the center to bundle them
+        p1_x[bend_mask_cp] = mid_x[bend_mask_cp] * 0.55
+        p1_y[bend_mask_cp] = mid_y[bend_mask_cp] * 0.55
+        
+        # Evaluate Quadratic Bezier curve at 5 points (t = 0.0, 0.25, 0.5, 0.75, 1.0)
+        # Plus 1 NaN point to separate the segment rendering
+        total_points = num_edges * 6
+        
+        lines_x = cp.empty(total_points, dtype=cp.float32)
+        lines_y = cp.empty(total_points, dtype=cp.float32)
+        
+        # evaluate formula: B(t) = (1-t)^2 * P0 + 2*(1-t)*t * P1 + t^2 * P2
+        for s_idx, t in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
+            b_x = (1.0 - t)**2 * x_src + 2.0 * (1.0 - t) * t * p1_x + t**2 * x_tgt
+            b_y = (1.0 - t)**2 * y_src + 2.0 * (1.0 - t) * t * p1_y + t**2 * y_tgt
+            
+            lines_x[s_idx::6] = b_x
+            lines_y[s_idx::6] = b_y
+            
+        # Add NaNs to separate lines in Datashader
+        lines_x[5::6] = cp.nan
+        lines_y[5::6] = cp.nan
+        
+        df_lines = cudf.DataFrame({
+            'x': lines_x,
+            'y': lines_y
+        })
+        
+        # Clean up intermediate DataFrames
+        del df_edges, edges_coords, lines_x, lines_y, dx, dy, dist, x_src, y_src, x_tgt, y_tgt, mid_x, mid_y, p1_x, p1_y, bend_mask_cp
+        cp.get_default_memory_pool().free_all_blocks()
+        
+        print(f"  Mapped curves for {num_edges:,} edges in {time.time() - start_edges:.2f}s.")
+
+    # 3. Setup Datashader Canvas
+    print(f"Step 3: Creating canvas of size {width}x{height}...")
+    x_min = float(df_nodes['x'].min())
+    x_max = float(df_nodes['x'].max())
+    y_min = float(df_nodes['y'].min())
+    y_max = float(df_nodes['y'].max())
+    
+    # Add a small padding to prevent clipping at bounds
+    x_pad = (x_max - x_min) * 0.01 if x_max > x_min else 1.0
+    y_pad = (y_max - y_min) * 0.01 if y_max > y_min else 1.0
+    x_range = (x_min - x_pad, x_max + x_pad)
+    y_range = (y_min - y_pad, y_max + y_pad)
+    
+    print(f"  Using ranges x: {x_range}, y: {y_range}")
+    cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+    
+    # 4. Render Edges (Filaments)
+    img_edges = None
+    if df_lines is not None:
+        print("Step 4: Rendering filaments (line aggregation)...")
+        start_render_edges = time.time()
+        agg_edges = cvs.line(df_lines, 'x', 'y', ds.count())
+        
+        # Pure white edges: single-color shading varies alpha by density (denser = more opaque).
+        # Alpha is capped at 150 so the filament layer stays translucent — the previous render
+        # showed unbounded white edges completely whiting out the periphery and burying node dust.
+        img_edges = tf.shade(agg_edges, cmap='#ffffff', how='eq_hist', alpha=150, min_alpha=8)
+        print(f"  Filaments rendered in {time.time() - start_render_edges:.2f}s.")
+        del df_lines
+        cp.get_default_memory_pool().free_all_blocks()
+        
+    # 5. Render Nodes (Points) Category-by-Category to conserve memory
+    print("Step 5: Rendering nodes (point aggregation category-by-category)...")
+    start_render_nodes = time.time()
+    
+    color_key = {
+        # Hues assigned by population: the 4 dominant categories (89% of nodes)
+        # get maximally separated colors; rare categories take the in-between hues.
+        0: '#ff1a1a',  # Biography & People (27.6%) - Red
+        1: '#00ffff',  # Science & Technology (2.8%) - Cyan
+        2: '#ff8000',  # History & Society (7.7%) - Orange
+        3: '#ff00ff',  # Art & Culture (19.4%) - Magenta
+        4: '#ff3399',  # Philosophy & Religion (1.3%) - Hot Pink
+        5: '#33ff33',  # Geography & Places (18.3%) - Lime Green
+        6: '#ffcc00',  # Other & General (22.9%) - Gold
+        7: '#50c878',  # Sports (unpopulated) - Emerald
+        8: '#3399ff'   # Business (unpopulated) - Blue
+    }
+    
+    px_dust = max(1, int(width / 16000))
+    px_stars = max(2, int(width / 8000))
+    px_supernova = max(3, int(width / 5000))
+    print(f"  Astronomical spread widths: dust={px_dust}px, stars={px_stars}px, supernova={px_supernova}px")
+    
+    img_nodes = None
+    
+    # Process each category sequentially on the GPU, clearing memory in-between
+    for c, color in color_key.items():
+        df_nodes_c = df_nodes[df_nodes['category'] == c]
+        num_c = len(df_nodes_c)
+        if num_c == 0:
+            continue
+            
+        print(f"  Aggregating and shading category {c} ({num_c:,} nodes) with astronomical tiers...")
+        dim_color = dim_hex_color(color, factor=0.35)
+        
+        # Split nodes in this category into three tiers based on pageviews
+        if num_c > 100:
+            views_c = df_nodes_c['views']
+            q995 = float(views_c.quantile(0.995))
+            q95 = float(views_c.quantile(0.95))
+            
+            df_supernova = df_nodes_c[df_nodes_c['views'] >= q995]
+            df_stars = df_nodes_c[(df_nodes_c['views'] >= q95) & (df_nodes_c['views'] < q995)]
+            df_dust = df_nodes_c[df_nodes_c['views'] < q95]
+        else:
+            df_supernova = df_nodes_c.head(0)
+            df_stars = df_nodes_c.head(0)
+            df_dust = df_nodes_c
+
+        # 1. Render Dust (smallest size)
+        img_dust = None
+        if len(df_dust) > 0:
+            agg_dust = cvs.points(df_dust, 'x', 'y', ds.count())
+            # Shade from dim_color to vibrant color so nodes are visible on black
+            img_dust = tf.shade(agg_dust, cmap=[dim_color, color], how='eq_hist')
+            img_dust = tf.spread(img_dust, px=px_dust)
+            del agg_dust
+
+        # 2. Render Bright Stars (medium size)
+        img_stars = None
+        if len(df_stars) > 0:
+            agg_stars = cvs.points(df_stars, 'x', 'y', ds.count())
+            img_stars = tf.shade(agg_stars, cmap=[dim_color, color], how='eq_hist')
+            img_stars = tf.spread(img_stars, px=px_stars)
+            del agg_stars
+
+        # 3. Render Supernovas (large size)
+        img_supernova = None
+        if len(df_supernova) > 0:
+            agg_supernova = cvs.points(df_supernova, 'x', 'y', ds.count())
+            img_supernova = tf.shade(agg_supernova, cmap=[dim_color, color], how='eq_hist')
+            img_supernova = tf.spread(img_supernova, px=px_supernova)
+            del agg_supernova
+
+        # Stack the sizes for this category (now fully safe on GPU)
+        img_c = None
+        for img_tier in [img_dust, img_stars, img_supernova]:
+            if img_tier is not None:
+                if img_c is None:
+                    img_c = img_tier
+                else:
+                    img_c = tf.stack(img_c, img_tier, how='over')
+
+        if img_c is not None:
+            if img_nodes is None:
+                img_nodes = img_c
+            else:
+                img_nodes = tf.stack(img_nodes, img_c, how='over')
+            
+        # Free memory block-by-block
+        del df_nodes_c, df_supernova, df_stars, df_dust, img_dust, img_stars, img_supernova, img_c
+        cp.get_default_memory_pool().free_all_blocks()
+        
+    if img_nodes is None:
+        print("  Warning: No category nodes found. Rendering fallback default aggregation...")
+        agg_nodes = cvs.points(df_nodes, 'x', 'y', ds.count())
+        img_nodes = tf.shade(agg_nodes, cmap=['#333333', '#ffffff'], how='eq_hist')
+        img_nodes = tf.spread(img_nodes, px=px_dust)
+        
+    print(f"  Nodes rendered in {time.time() - start_render_nodes:.2f}s.")
+    
+    # 6. Blending and Saving
+    print("Step 6: Blending layers and exporting static PNG image...")
+    start_blend = time.time()
+    
+    if img_edges is not None:
+        final_img = tf.stack(img_edges, img_nodes, how='over')
+    else:
+        final_img = img_nodes
+        
+    # Convert final stacked image to CPU right before saving to prevent device/type mismatches in export_image
+    if hasattr(final_img.data, 'get'):
+        import xarray as xr
+        final_img = xr.DataArray(final_img.data.get(), coords=final_img.coords, dims=final_img.dims)
+
+    # Remove file extension from output name since export_image appends .png
+    base_output = os.path.splitext(output_name)[0]
+    export_image(final_img, base_output, background="black", export_path=".")
+    
+    print(f"  Image exported successfully as {base_output}.png in {time.time() - start_blend:.2f}s.")
+    print(f"=== Total Rendering Time: {time.time() - start_total:.2f} seconds ===")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="GPU-Accelerated Wikipedia Galaxy Renderer (Datashader)")
+    parser.add_argument("--bin", type=str, default="coordinates_rapids.bin", help="Path to coordinates binary file")
+    parser.add_argument("--edges", type=str, default="edges_weighted.csv.gz", help="Path to gzipped edges CSV file")
+    parser.add_argument("--output", type=str, default="", help="Output image filename (default: auto-increment)")
+    parser.add_argument("--width", type=int, default=16000, help="Width of the output image in pixels")
+    parser.add_argument("--height", type=int, default=16000, help="Height of the output image in pixels")
+    parser.add_argument("--edge_sample", type=int, default=15000000, help="Number of edges to render for filaments (0 for all)")
+    
+    args = parser.parse_args()
+    
+    # Fallback paths check
+    bin_file = args.bin
+    if not os.path.exists(bin_file):
+        if os.path.exists("coordinates.bin"):
+            bin_file = "coordinates.bin"
+        else:
+            print("Error: Could not find coordinates_rapids.bin or coordinates.bin.")
+            sys.exit(1)
+            
+    edges_file = args.edges
+    if not os.path.exists(edges_file):
+        if os.path.exists("edges.csv.gz"):
+            edges_file = "edges.csv.gz"
+            
+    output_img = args.output
+    if not output_img:
+        output_img = get_next_output_path("massive_galaxy_gpu")
+        
+    render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample)

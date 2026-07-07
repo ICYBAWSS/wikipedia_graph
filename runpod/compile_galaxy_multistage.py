@@ -13,12 +13,16 @@ except ImportError:
     print("Error: RAPIDS (cudf, cugraph, pandas) is not installed.")
     sys.exit(1)
 
-def compile_galaxy_multistage():
-    edges_csv = "edges_weighted.csv.gz"
-    meta_csv = "metadata.csv"
-    out_bin = "coordinates_rapids.bin"
+def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metadata.csv",
+                              out_bin="coordinates_rapids.bin", sample_frac=1.0,
+                              iters_scale=1.0, ewi3=0.4, diag_png="diagnostic_layout.png"):
+    # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
+    def it(n, floor=10):
+        return max(floor, int(round(n * iters_scale)))
 
     print("--- Wikipedia Galaxy Compiler (Multi-Stage Layout Mode) ---")
+    print(f"  Config: edges={edges_csv} meta={meta_csv} out={out_bin}")
+    print(f"  Config: sample_frac={sample_frac} iters_scale={iters_scale} phase3_ewi={ewi3}")
 
     if not os.path.exists(edges_csv) or not os.path.exists(meta_csv):
         print(f"Error: {edges_csv} or {meta_csv} not found.")
@@ -51,6 +55,16 @@ def compile_galaxy_multistage():
     gdf_edges = gdf_edges.rename(columns={"target": "destination"})
     print(f"  GPU Dataframe Ready with {len(gdf_edges):,} edges. ({time.time() - start_load:.2f} seconds)")
 
+    # Smoke-test mode: randomly subsample edges to validate the full pipeline cheaply
+    if sample_frac < 1.0:
+        gdf_edges = gdf_edges.sample(frac=sample_frac, random_state=42).reset_index(drop=True)
+        print(f"  [SMOKE TEST] Subsampled to {len(gdf_edges):,} edges ({sample_frac:.0%}).")
+
+    # --- ADVANCED STRUCTURAL STABILITY & ANTI-HAIRBALL FEATURES ---
+    print("  Normalizing and clamping edge weights to prevent gravitational collapse (Attraction Floor)...")
+    # Apply log1p normalization and clamp to 2.0 max weight using positional CuPy clip bounds
+    gdf_edges['weight'] = cp.clip(cp.log1p(cp.asarray(gdf_edges['weight'])), 0.0, 2.0)
+
     # 3. Construct Graph & Calculate Degrees on GPU
     print("Step 3: Constructing cuGraph & calculating degrees...")
     start_graph = time.time()
@@ -66,8 +80,13 @@ def compile_galaxy_multistage():
     full_degrees[deg_v] = deg_c
     print("  Degrees calculated.")
 
-    # Calculate radii for collision prevention
-    node_radii = np.log1p(node_views) * 2.0 + 1.0 
+    # Calculate radii for collision prevention, normalized to the seeded layout scale:
+    # map the 99.9th-percentile hub radius to ~half the Louvain community spacing (3000.0),
+    # so even supernova hubs claim at most a neighborhood, never the whole map.
+    # (The old flat *5000.0 gave top hubs ~195k-unit radii — larger than the entire layout.)
+    raw_radii = np.log1p(node_views) * 2.0 + 1.0
+    radius_scale = 1500.0 / float(np.percentile(raw_radii, 99.9))
+    node_radii = raw_radii * radius_scale
     radius_gdf = cudf.DataFrame({
         'vertex': cp.arange(num_nodes, dtype=np.int32), 
         'radius': node_radii.astype(np.float32)
@@ -79,9 +98,9 @@ def compile_galaxy_multistage():
     core_df = cugraph.core_number(G)
     core_col = 'core_number' if 'core_number' in core_df.columns else 'values'
     
-    # Calculate optimal k-core threshold dynamically (targeting top ~25% of nodes for backbone)
+    # Calculate optimal k-core threshold dynamically (targeting top ~10% of nodes for a tighter backbone skeleton)
     core_vals = core_df[core_col].to_pandas()
-    k_threshold = int(core_vals.quantile(0.75))
+    k_threshold = int(core_vals.quantile(0.90))
     if k_threshold < 3:
         k_threshold = 3  # fallback to minimum 3
         
@@ -117,17 +136,55 @@ def compile_galaxy_multistage():
     
     # Filter radius DataFrame for backbone nodes
     radius_gdf_backbone = radius_gdf[radius_gdf['vertex'].isin(backbone_vertices)]
-    
+
+    # --- LOUVAIN COMMUNITY SEEDING ---
+    # FA2 from random init collapses into a mixed-density disk local minimum (see
+    # massive_galaxy_static3.png: uniformly interleaved core, no continent separation).
+    # 600 iterations cannot "unmix" 690k interleaved nodes. Instead, detect communities
+    # on the GPU and pre-place each one in its own region so FA2 only refines boundaries.
+    print("  Computing Louvain communities to seed continental positions...")
+    start_louvain = time.time()
+    parts, modularity = cugraph.louvain(G_backbone)
+    num_comms = int(parts['partition'].nunique())
+    print(f"  Louvain found {num_comms:,} communities (modularity {modularity:.4f}) in {time.time() - start_louvain:.2f}s.")
+
+    # Community centroids on a golden-angle spiral: uniform 2D packing, largest at center
+    sizes = parts.groupby('partition').size().reset_index()
+    sizes = sizes.rename(columns={sizes.columns[-1]: 'n'})
+    sizes = sizes.sort_values('n', ascending=False).reset_index(drop=True)
+    rank = cp.arange(len(sizes), dtype=cp.float64)
+    golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+    spacing = 3000.0
+    sizes['cx'] = spacing * cp.sqrt(rank) * cp.cos(rank * golden_angle)
+    sizes['cy'] = spacing * cp.sqrt(rank) * cp.sin(rank * golden_angle)
+
+    # Scatter members in a disk around their community centroid (deterministic hash jitter,
+    # disk radius ~ sqrt(community size) for uniform node density)
+    parts = parts.merge(sizes[['partition', 'n', 'cx', 'cy']], on='partition')
+    n_max = float(sizes['n'].max())
+    seed_cp = (cp.asarray(parts['vertex']).astype(cp.int64) * 1103515245 + 12345) & 0x7fffffff
+    theta_cp = (seed_cp % 100000) / 100000.0 * 2.0 * np.pi
+    disk_r = 2.0 * spacing * cp.sqrt(cp.asarray(parts['n']).astype(cp.float64) / n_max)
+    r_cp = cp.sqrt((seed_cp // 100000 % 100000) / 100000.0) * disk_r
+    parts['x'] = cudf.Series(cp.asarray(parts['cx']) + r_cp * cp.cos(theta_cp), index=parts.index)
+    parts['y'] = cudf.Series(cp.asarray(parts['cy']) + r_cp * cp.sin(theta_cp), index=parts.index)
+
+    seed_pos = parts[['vertex', 'x', 'y']].astype(np.float32)
+    seed_pos['vertex'] = seed_pos['vertex'].astype(np.int32)
+    del parts, sizes, seed_cp, theta_cp, r_cp, disk_r
+    cp.get_default_memory_pool().free_all_blocks()
+
     pos_backbone = cugraph.force_atlas2(
         G_backbone,
-        max_iter=600,  # 600 iterations for deep macro-continent relaxation
+        max_iter=it(600),  # 600 iterations for deep macro-continent relaxation
+        pos_list=seed_pos,  # Louvain-seeded start: refine continents, don't unmix a disk
         lin_log_mode=True, 
-        outbound_attraction_distribution=True, 
-        scaling_ratio=80.0, # wide separation for macro-continents
+        outbound_attraction_distribution=False, # hubs pull neighbors closer
+        scaling_ratio=240.0, # wide separation for macro-continents (tripled from 80.0)
         strong_gravity_mode=False,
         gravity=0.2, # relatively high gravity to prevent drifting core components
         edge_weight_influence=0.4, # balanced edge weight influence
-        prevent_overlapping=False, # keep it fast
+        prevent_overlapping=True, # prevent backbone overlap from the start
         vertex_radius=radius_gdf_backbone,
         verbose=True
     )
@@ -141,9 +198,21 @@ def compile_galaxy_multistage():
     print("Step 6: Running Multi-Source Label Propagation to map peripheral nodes to closest core gateways...")
     start_prop = time.time()
     
+    # Filter out core-to-core edges to save VRAM.
+    # We only need edges that have at least one peripheral node endpoint for core-periphery mapping.
+    is_core_src = gdf_edges['source'].isin(backbone_vertices)
+    is_core_dst = gdf_edges['destination'].isin(backbone_vertices)
+    
+    gdf_periph_edges = gdf_edges[~is_core_src | ~is_core_dst]
+    gdf_periph_edges = gdf_periph_edges[['source', 'destination']] # Discard weights to save memory
+    
     # Create bidirectional edge list for mapping neighbors
-    gdf_edges_rev = gdf_edges.rename(columns={"source": "destination", "destination": "source"})
-    gdf_undir_edges = cudf.concat([gdf_edges, gdf_edges_rev]).drop_duplicates(subset=['source', 'destination'])
+    gdf_edges_rev = gdf_periph_edges.rename(columns={"source": "destination", "destination": "source"})
+    gdf_undir_edges = cudf.concat([gdf_periph_edges, gdf_edges_rev]).drop_duplicates(subset=['source', 'destination'])
+    
+    # Clean up intermediate dataframes to free VRAM immediately
+    del gdf_periph_edges, gdf_edges_rev
+    cp.get_default_memory_pool().free_all_blocks()
     
     # Initialize closest_core array
     closest_core = cudf.DataFrame({
@@ -200,18 +269,18 @@ def compile_galaxy_multistage():
     gateway_coords = closest_core.merge(backbone_coords, on='gateway', how='left')
     
     # Generate deterministic radial offsets based on vertex ID using Cupy
-    vertex_ids_cp = cp.array(gateway_coords['vertex'].values)
+    vertex_ids_cp = cp.asarray(gateway_coords['vertex'])
     seed_cp = (vertex_ids_cp * 1103515245 + 12345) & 0x7fffffff
     theta_cp = (seed_cp % 1000) / 1000.0 * 2.0 * np.pi
-    r_cp = 2.0 + (seed_cp // 1000 % 1000) / 1000.0 * 13.0
+    r_cp = 6.0 + (seed_cp // 1000 % 1000) / 1000.0 * 39.0 # tripled jitter to match 3x layout scale
     
-    theta = cp.asnumpy(theta_cp)
-    r = cp.asnumpy(r_cp)
+    offset_x = r_cp * cp.cos(theta_cp)
+    offset_y = r_cp * cp.sin(theta_cp)
     
     # Calculate starting coordinates
     init_pos = gateway_coords.copy()
-    init_pos['x'] = init_pos['gx'] + r * np.cos(theta)
-    init_pos['y'] = init_pos['gy'] + r * np.sin(theta)
+    init_pos['x'] = init_pos['gx'] + cudf.Series(offset_x, index=init_pos.index)
+    init_pos['y'] = init_pos['gy'] + cudf.Series(offset_y, index=init_pos.index)
     
     # For backbone vertices, they should keep their original backbone positions (no jitter)
     is_backbone = init_pos['vertex'].isin(backbone_vertices)
@@ -223,13 +292,19 @@ def compile_galaxy_multistage():
     num_unplaced = unplaced_mask.sum()
     if num_unplaced > 0:
         std_val = float(pos_backbone['x'].std()) if len(pos_backbone) > 0 else 1000.0
-        init_pos.loc[unplaced_mask, 'x'] = np.random.uniform(-std_val * 3, std_val * 3, num_unplaced)
-        init_pos.loc[unplaced_mask, 'y'] = np.random.uniform(-std_val * 3, std_val * 3, num_unplaced)
+        # Generate random coordinates using CuPy directly on the GPU
+        rand_x = cp.random.uniform(-std_val * 3, std_val * 3, int(num_unplaced))
+        rand_y = cp.random.uniform(-std_val * 3, std_val * 3, int(num_unplaced))
+        init_pos.loc[unplaced_mask, 'x'] = rand_x
+        init_pos.loc[unplaced_mask, 'y'] = rand_y
         
     print(f"  Initialized coordinates for {len(init_pos):,} nodes.")
     
+    # Clean dataframe columns to just vertex, x, y
+    init_pos = init_pos[['vertex', 'x', 'y']]
+    
     # Clean up temp dataframes to conserve memory
-    del gateway_coords, backbone_coords, gdf_edges_rev, gdf_undir_edges
+    del gateway_coords, backbone_coords, gdf_undir_edges
     cp.get_default_memory_pool().free_all_blocks()
 
     # --- PHASE 2: Pinned Ingestion Simulation ---
@@ -249,24 +324,25 @@ def compile_galaxy_multistage():
     pinned_core_pos['vertex'] = pinned_core_pos['vertex'].astype(np.int32)
     
     num_steps = 10
-    iters_per_step = 25
+    iters_per_step = it(25, floor=5)
     
     for step_idx in range(num_steps):
         step_start = time.time()
         print(f"  Step {step_idx + 1}/{num_steps}: Simulating {iters_per_step} iterations...")
         
-        # Run ForceAtlas2 on the full graph
+        # Run ForceAtlas2 on the full graph with overlap prevention enabled
         current_pos = cugraph.force_atlas2(
             G,
             max_iter=iters_per_step,
             pos_list=current_pos,
             lin_log_mode=True,
-            outbound_attraction_distribution=True,
-            scaling_ratio=80.0,
+            outbound_attraction_distribution=False,
+            scaling_ratio=240.0, # tripled from 80.0
             strong_gravity_mode=False,
             gravity=0.05,  # lower gravity to allow peripheral trees to expand
             edge_weight_influence=0.4,
-            prevent_overlapping=False,
+            prevent_overlapping=True,
+            vertex_radius=radius_gdf,
             verbose=False
         )
         
@@ -286,32 +362,43 @@ def compile_galaxy_multistage():
     print("Step 9 [Phase 3]: Running Global Polish Simulation...")
     start_phase3 = time.time()
     
-    print("  Sub-phase 3A: Simulating 80 iterations without overlap prevention...")
+    # Print diagnostics before Phase 3
+    x_std = float(current_pos['x'].std())
+    y_std = float(current_pos['y'].std())
+    print(f"  [Diagnostics] Pre-Phase 3 coordinate spread - std(x): {x_std:.2f}, std(y): {y_std:.2f}")
+
+    print("  Sub-phase 3A: Simulating 80 iterations with overlap prevention...")
     current_pos = cugraph.force_atlas2(
         G,
-        max_iter=80,
+        max_iter=it(80),
         pos_list=current_pos,
         lin_log_mode=True,
-        outbound_attraction_distribution=True,
-        scaling_ratio=60.0, # turned down slightly from 80.0
+        outbound_attraction_distribution=False,
+        scaling_ratio=240.0,  # Keep high to maintain strong repulsion
         strong_gravity_mode=False,
-        gravity=0.15,       # increased slightly from 0.05 to settle components
-        edge_weight_influence=0.4,
-        prevent_overlapping=False,
+        gravity=0.01,         # Low gravity to allow expansion
+        edge_weight_influence=ewi3, # A/B-testable: 0.4 keeps mild weight signal, 0.0 = pure topology
+        prevent_overlapping=True,  # Prevent overlap earlier
+        vertex_radius=radius_gdf,
         verbose=True
     )
     
+    # Print diagnostics after Phase 3A
+    x_std = float(current_pos['x'].std())
+    y_std = float(current_pos['y'].std())
+    print(f"  [Diagnostics] Post-Phase 3A coordinate spread - std(x): {x_std:.2f}, std(y): {y_std:.2f}")
+
     print("  Sub-phase 3B: Simulating final 40 iterations with overlap prevention enabled...")
     final_pos_gdf = cugraph.force_atlas2(
         G,
-        max_iter=40,
+        max_iter=it(40),
         pos_list=current_pos,
         lin_log_mode=True,
-        outbound_attraction_distribution=True,
-        scaling_ratio=60.0,
+        outbound_attraction_distribution=False,
+        scaling_ratio=240.0,
         strong_gravity_mode=False,
-        gravity=0.15,
-        edge_weight_influence=0.4,
+        gravity=0.01,
+        edge_weight_influence=ewi3,
         prevent_overlapping=True,
         vertex_radius=radius_gdf,
         verbose=True
@@ -338,10 +425,15 @@ def compile_galaxy_multistage():
     orphans = np.where(mask)[0]
 
     if len(orphans) > 0:
-        print(f"  Scattering {len(orphans):,} degree-0 orphans as background dust...")
-        std_val = np.std(final_coords[valid_vertices])
-        final_coords[orphans, 0] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
-        final_coords[orphans, 1] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
+        if sample_frac < 1.0:
+            # Smoke test: mark unsimulated nodes NaN so renders show only real layout output
+            print(f"  [SMOKE TEST] Marking {len(orphans):,} unsimulated nodes as NaN (excluded from render)...")
+            final_coords[orphans, :] = np.nan
+        else:
+            print(f"  Scattering {len(orphans):,} degree-0 orphans as background dust...")
+            std_val = np.std(final_coords[valid_vertices])
+            final_coords[orphans, 0] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
+            final_coords[orphans, 1] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
 
     # Format: [uint32 N][(float x, float y, float views, float degree, float cat_id) * N]
     with open(out_bin, "wb") as f:
@@ -356,5 +448,43 @@ def compile_galaxy_multistage():
 
     print(f"Done! Saved enriched coordinates to {out_bin} in {time.time() - start_export:.2f} seconds.")
 
+    # Print final coordinates spread diagnostics
+    x_std = float(final_coords[:, 0].std())
+    y_std = float(final_coords[:, 1].std())
+    print(f"  [Diagnostics] Final coordinate spread (with orphans) - std(x): {x_std:.2f}, std(y): {y_std:.2f}")
+
+    # Generate Matplotlib raw scatter plot diagnostic
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        print("  [Diagnostics] Plotting raw coordinate scatter (50k sample)...")
+        sample_size = min(50000, len(valid_vertices))
+        sample_idx = np.random.choice(valid_vertices, sample_size, replace=False)
+        plt.figure(figsize=(10, 10))
+        plt.scatter(final_coords[sample_idx, 0], final_coords[sample_idx, 1], s=0.5, alpha=0.5, c='red')
+        plt.title(f"Layout Scatter (50k sample) | ewi3={ewi3} sample_frac={sample_frac} iters_scale={iters_scale}")
+        plt.grid(True, alpha=0.3)
+        plt.savefig(diag_png, dpi=150)
+        plt.close()
+        print(f"  [Diagnostics] Saved raw coordinates scatter plot to {diag_png}.")
+    except Exception as ex:
+        print(f"  [Diagnostics] Warning: Could not generate diagnostic plot: {ex}")
+
 if __name__ == '__main__':
-    compile_galaxy_multistage()
+    import argparse
+    parser = argparse.ArgumentParser(description="Multi-Stage GPU Galaxy Layout Compiler (RAPIDS cuGraph)")
+    parser.add_argument("--edges", type=str, default="edges_weighted.csv.gz", help="Gzipped edges CSV")
+    parser.add_argument("--meta", type=str, default="metadata.csv", help="Node metadata CSV")
+    parser.add_argument("--out", type=str, default="coordinates_rapids.bin", help="Output coordinates binary")
+    parser.add_argument("--sample-frac", type=float, default=1.0, help="Edge subsample fraction for smoke tests (e.g. 0.03)")
+    parser.add_argument("--iters-scale", type=float, default=1.0, help="Scale all FA2 iteration counts (e.g. 0.2 for smoke tests)")
+    parser.add_argument("--ewi3", type=float, default=0.4, help="Phase 3 edge_weight_influence (A/B: 0.0 vs 0.4)")
+    parser.add_argument("--diag", type=str, default="diagnostic_layout.png", help="Diagnostic scatter plot filename")
+    args = parser.parse_args()
+
+    compile_galaxy_multistage(
+        edges_csv=args.edges, meta_csv=args.meta, out_bin=args.out,
+        sample_frac=args.sample_frac, iters_scale=args.iters_scale,
+        ewi3=args.ewi3, diag_png=args.diag
+    )
