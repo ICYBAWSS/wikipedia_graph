@@ -33,14 +33,29 @@ pip install -q datashader matplotlib pillow "huggingface_hub[cli]" hf_transfer |
 export HF_HUB_ENABLE_HF_TRANSFER=1   # saturate datacenter bandwidth on the 1.25GB edge file
 
 # hf (new CLI) with huggingface-cli fallback
+hf_cli() {
+    if command -v hf >/dev/null 2>&1; then hf "$@"; else huggingface-cli "$@"; fi
+}
 hf_download() {
-    local file="$1"
-    if command -v hf >/dev/null 2>&1; then
-        hf download "$HF_REPO" "$file" --repo-type dataset --local-dir .
-    else
-        huggingface-cli download "$HF_REPO" "$file" --repo-type dataset --local-dir .
+    hf_cli download "$HF_REPO" "$1" --repo-type dataset --local-dir .
+}
+
+# Push log + artifacts to HF on exit (success OR crash) so the run can be
+# monitored and diagnosed remotely without SSH access to the pod.
+upload_smoke_artifacts() {
+    rc=$?
+    if [ -n "${HF_TOKEN:-}" ]; then
+        echo "--- Uploading smoke artifacts to HF (smoke/) for remote inspection ---"
+        for f in smoke_test.log diagnostic_sample_ewi04.png diagnostic_sample_ewi00.png \
+                 smoke_render_ewi04.png smoke_render_ewi00.png; do
+            [ -f "$f" ] && { hf_cli upload "$HF_REPO" "$f" "smoke/$f" --repo-type dataset || true; }
+        done
+        # marker file so remote pollers can distinguish "done" from "still running"
+        echo "exit_code=$rc finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > smoke_done.txt
+        hf_cli upload "$HF_REPO" smoke_done.txt smoke/smoke_done.txt --repo-type dataset || true
     fi
 }
+trap upload_smoke_artifacts EXIT
 
 echo ""
 echo "--- Step 1: Environment preflight ---"
