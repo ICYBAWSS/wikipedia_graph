@@ -448,9 +448,9 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
 
     print(f"Done! Saved enriched coordinates to {out_bin} in {time.time() - start_export:.2f} seconds.")
 
-    # Print final coordinates spread diagnostics
-    x_std = float(final_coords[:, 0].std())
-    y_std = float(final_coords[:, 1].std())
+    # Print final coordinates spread diagnostics (nanstd: smoke bins contain NaN rows)
+    x_std = float(np.nanstd(final_coords[:, 0]))
+    y_std = float(np.nanstd(final_coords[:, 1]))
     print(f"  [Diagnostics] Final coordinate spread (with orphans) - std(x): {x_std:.2f}, std(y): {y_std:.2f}")
 
     # Generate Matplotlib raw scatter plot diagnostic

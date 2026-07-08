@@ -74,7 +74,17 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         # Default fallback values
         df_nodes['views'] = cp.zeros(num_nodes, dtype=cp.float32)
         df_nodes['category'] = cp.zeros(num_nodes, dtype=cp.int32)
-        
+
+    # Assign vertex IDs BEFORE any row filtering, so edge merges stay aligned
+    df_nodes['vertex'] = cp.arange(num_nodes, dtype=np.int32)
+
+    # Drop nodes with NaN/null coordinates (smoke-test bins mark unsimulated nodes
+    # as NaN; cuDF stores them as nulls which CuPy/Datashader cannot consume)
+    n_before = len(df_nodes)
+    df_nodes = df_nodes.dropna(subset=['x', 'y']).reset_index(drop=True)
+    if len(df_nodes) < n_before:
+        print(f"  Dropped {n_before - len(df_nodes):,} NaN-coordinate nodes (smoke-mode bin).")
+
     print(f"  Loaded coordinates for {num_nodes:,} nodes in {time.time() - start_load:.2f}s.")
     
     # Distribute the orphan cluster at (0, 0) if any
@@ -111,7 +121,8 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         num_edges = len(df_edges)
         
         # Map source and target coordinates using GPU merges
-        df_nodes['vertex'] = cp.arange(num_nodes, dtype=np.int32)
+        if 'vertex' not in df_nodes.columns:
+            df_nodes['vertex'] = cp.arange(num_nodes, dtype=np.int32)
         
         edges_coords = df_edges.merge(df_nodes[['vertex', 'x', 'y']], left_on='source', right_on='vertex')
         edges_coords = edges_coords.rename(columns={'x': 'x_src', 'y': 'y_src'}).drop(columns=['vertex'])
