@@ -35,6 +35,17 @@ hf_cli() {
     if command -v hf >/dev/null 2>&1; then hf "$@"; else huggingface-cli "$@"; fi
 }
 
+# Push log + done-marker to HF on exit (success OR crash) for remote monitoring
+upload_run_log() {
+    rc=$?
+    if [ -n "${HF_TOKEN:-}" ]; then
+        hf_cli upload "$HF_REPO" full_run.log runs/full_run.log --repo-type dataset || true
+        echo "exit_code=$rc finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > full_done.txt
+        hf_cli upload "$HF_REPO" full_done.txt runs/full_done.txt --repo-type dataset || true
+    fi
+}
+trap upload_run_log EXIT
+
 echo ""
 echo "--- Step 1: Environment preflight ---"
 python runpod_check_env.py
