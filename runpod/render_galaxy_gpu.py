@@ -130,7 +130,14 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         # Merge target coordinate columns
         edges_coords = edges_coords.merge(df_nodes[['vertex', 'x', 'y']], left_on='target', right_on='vertex')
         edges_coords = edges_coords.rename(columns={'x': 'x_tgt', 'y': 'y_tgt'}).drop(columns=['vertex'])
-        
+
+        # Recompute edge count: the inner merges drop edges whose endpoints were
+        # filtered out (NaN-coordinate nodes in smoke bins) — stale num_edges
+        # breaks the strided Bezier array assignments below
+        if len(edges_coords) != num_edges:
+            print(f"  {num_edges - len(edges_coords):,} edges dropped (filtered endpoints); rendering {len(edges_coords):,}.")
+            num_edges = len(edges_coords)
+
         # Convert columns to CuPy arrays for vectorized GPU calculation
         x_src = cp.asarray(edges_coords['x_src'])
         y_src = cp.asarray(edges_coords['y_src'])
