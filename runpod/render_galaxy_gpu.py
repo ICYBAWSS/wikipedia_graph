@@ -36,10 +36,11 @@ def dim_hex_color(hex_color, factor=0.25):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
-               edge_curve=0.0, edge_alpha=90, edges_off=False, cat_weights=None):
+               edge_curve=0.0, edge_alpha=90, edges_off=False, cat_weights=None,
+               color_by='category'):
     print("--- GPU-Accelerated Datashader Renderer ---")
     print(f"  Edge settings: {'OFF' if edges_off else 'ON'} curve={edge_curve} alpha={edge_alpha}")
-    print(f"  Category dominance weights: {cat_weights or 'all 1.0'}")
+    print(f"  Color by: {color_by} | dominance weights: {cat_weights or 'all 1.0'}")
     start_total = time.time()
     
     # 1. Read Binary Coordinates
@@ -77,6 +78,11 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
         # Default fallback values
         df_nodes['views'] = cp.zeros(num_nodes, dtype=cp.float32)
         df_nodes['category'] = cp.zeros(num_nodes, dtype=cp.int32)
+
+    # Column 5 (community, from Louvain) is present in newer bins; enables --color-by community
+    if cols >= 6:
+        df_nodes['community'] = raw_cp[:, 5].astype(np.int32)
+        print(f"  Community column present ({int(df_nodes['community'].max()) + 1} communities).")
 
     # Assign vertex IDs BEFORE any row filtering, so edge merges stay aligned
     df_nodes['vertex'] = cp.arange(num_nodes, dtype=np.int32)
@@ -232,36 +238,49 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
     print("Step 5: Rendering nodes (point aggregation category-by-category)...")
     start_render_nodes = time.time()
     
-    # Hues spread maximally around the color wheel. The 4 dominant categories
-    # (Biography/Other/Art/Geography = 88% of nodes) get red/yellow/blue/green —
-    # ~90 deg apart, instantly distinguishable — instead of four warm reds.
-    color_key = {
-        0: '#ff2020',  # Biography & People (27.6%) - Red        (hue 0)
-        1: '#00e5ff',  # Science & Technology (2.8%) - Cyan      (hue 190)
-        2: '#ff8a00',  # History & Society (7.7%) - Orange       (hue 33)
-        3: '#2a6bff',  # Art & Culture (19.4%) - Blue            (hue 220)
-        4: '#c04dff',  # Philosophy & Religion (1.3%) - Violet   (hue 275)
-        5: '#2bd94b',  # Geography & Places (18.3%) - Green      (hue 133)
-        6: '#ffe000',  # Other & General (22.9%) - Yellow        (hue 53)
-        7: '#ff2e8b',  # Sports (unpopulated) - Pink             (hue 330)
-        8: '#00d9a6'   # Business (unpopulated) - Teal           (hue 166)
+    # Category palette: hues spread maximally around the wheel so the 4 dominant
+    # categories (Biography/Other/Art/Geography) get red/yellow/blue/green.
+    category_key = {
+        0: '#ff2020', 1: '#00e5ff', 2: '#ff8a00', 3: '#2a6bff', 4: '#c04dff',
+        5: '#2bd94b', 6: '#ffe000', 7: '#ff2e8b', 8: '#00d9a6',
     }
-    
-    px_dust = max(1, int(width / 16000))
-    px_stars = max(2, int(width / 8000))
-    px_supernova = max(3, int(width / 5000))
-    print(f"  Astronomical spread widths: dust={px_dust}px, stars={px_stars}px, supernova={px_supernova}px")
-    
-    import xarray as xr
 
     def hex_to_rgb(h):
         h = h.lstrip('#')
         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
-    # Categories actually present in the data (skip empty ones cheaply)
-    cats_present = [c for c in color_key if int((df_nodes['category'] == c).sum()) > 0]
+    def community_palette(ids):
+        # Distinct color per community via golden-angle hue rotation (varied S/V so
+        # adjacent hues still separate). Each Louvain lobe becomes one clean color.
+        import colorsys
+        ga = 0.6180339887
+        key = {}
+        for i, cid in enumerate(sorted(ids)):
+            h = (i * ga) % 1.0
+            s = 0.62 + 0.28 * ((i * 3) % 3) / 2.0
+            v = 0.82 + 0.18 * ((i * 2) % 2)
+            r, g, b = colorsys.hsv_to_rgb(h, min(s, 1.0), min(v, 1.0))
+            key[cid] = '#%02x%02x%02x' % (int(r * 255), int(g * 255), int(b * 255))
+        return key
 
-    # Per-category dominance weights (parsed from --cat-weights "0:0.4,3:1.2" etc.)
+    # Choose what drives color: category (default) or community (per-Louvain-lobe)
+    color_field = 'category'
+    if color_by == 'community' and 'community' in df_nodes.columns:
+        color_field = 'community'
+    print(f"  Coloring by: {color_field}")
+
+    present = [int(v) for v in df_nodes[color_field].unique().to_pandas().tolist() if v >= 0]
+    color_key = community_palette(present) if color_field == 'community' else category_key
+    cats_present = [c for c in present if c in color_key]
+
+    px_dust = max(1, int(width / 16000))
+    px_stars = max(2, int(width / 8000))
+    px_supernova = max(3, int(width / 5000))
+    print(f"  Astronomical spread widths: dust={px_dust}px, stars={px_stars}px, supernova={px_supernova}px")
+
+    import xarray as xr
+
+    # Per-field dominance weights (parsed from --cat-weights "0:0.4,3:1.2" etc.)
     cat_weight = dict(cat_weights or {})
 
     # Color lookup table indexed by category id; row (maxc+1) is the black
@@ -292,7 +311,7 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
         ksize = 2 * spread_px + 1
         total = best = winner = coords_ref = None
         for c in cats_present:
-            df_c = df_tier[df_tier['category'] == c]
+            df_c = df_tier[df_tier[color_field] == c]
             if len(df_c) == 0:
                 continue
             agg_c = cvs.points(df_c, 'x', 'y', ds.count())
@@ -415,6 +434,7 @@ if __name__ == "__main__":
     parser.add_argument("--edge-curve", type=float, default=0.0, help="Sideways edge bow as fraction of length (0=straight, never toward center)")
     parser.add_argument("--edge-alpha", type=int, default=90, help="Max opacity of the filament layer (0-255); lower = less core washout")
     parser.add_argument("--cat-weights", type=str, default="", help="Per-category dominance multipliers, e.g. '0:0.4' to demote Biography")
+    parser.add_argument("--color-by", type=str, default="category", choices=["category", "community"], help="Color nodes by category or by Louvain community")
 
     args = parser.parse_args()
 
@@ -444,4 +464,4 @@ if __name__ == "__main__":
         
     render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample,
                edge_curve=args.edge_curve, edge_alpha=args.edge_alpha, edges_off=args.edges_off,
-               cat_weights=cat_weights)
+               cat_weights=cat_weights, color_by=args.color_by)

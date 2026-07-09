@@ -148,6 +148,10 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     num_comms = int(parts['partition'].nunique())
     print(f"  Louvain found {num_comms:,} communities (modularity {modularity:.4f}) in {time.time() - start_louvain:.2f}s.")
 
+    # Persist backbone vertex -> community for community-coloring export.
+    # (Peripheral nodes inherit their gateway's community after label propagation.)
+    comm_backbone = parts[['vertex', 'partition']].rename(columns={'partition': 'community'}).copy()
+
     # Community centroids on a golden-angle spiral: uniform 2D packing, largest at center
     sizes = parts.groupby('partition').size().reset_index()
     sizes = sizes.rename(columns={sizes.columns[-1]: 'n'})
@@ -261,6 +265,17 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         step += 1
         
     print(f"  Propagation finished in {time.time() - start_prop:.2f} seconds.")
+
+    # Assign every node the community of its backbone gateway (backbone nodes are
+    # their own gateway). Build a dense num_nodes array of community ids (-1 = none).
+    node_community = np.full(num_nodes, -1, dtype=np.int32)
+    comm_join = closest_core[['vertex', 'gateway']].merge(
+        comm_backbone.rename(columns={'vertex': 'gateway'}), on='gateway', how='left')
+    cj_v = comm_join['vertex'].to_pandas().to_numpy(dtype=np.int32)
+    cj_c = comm_join['community'].fillna(-1).to_pandas().to_numpy(dtype=np.int32)
+    node_community[cj_v] = cj_c
+    print(f"  Assigned communities to {int((node_community >= 0).sum()):,} nodes.")
+    del comm_join
 
     # --- PHASE 2 PREPARATION: Vector-Offset Initialization ---
     print("Step 7: Initializing peripheral positions near core gateways with radial jitter...")
@@ -435,15 +450,18 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             final_coords[orphans, 0] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
             final_coords[orphans, 1] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
 
-    # Format: [uint32 N][(float x, float y, float views, float degree, float cat_id) * N]
+    # Format: [uint32 N][(float x, float y, float views, float degree, float cat_id, float community) * N]
+    # Column 5 (community) is new; readers that expect 5 columns still work via
+    # auto-detected column count. -1 = no community (orphans / unmapped).
     with open(out_bin, "wb") as f:
         f.write(struct.pack("I", num_nodes))
-        packed_data = np.zeros((num_nodes, 5), dtype=np.float32)
+        packed_data = np.zeros((num_nodes, 6), dtype=np.float32)
         packed_data[:, 0] = final_coords[:, 0]
         packed_data[:, 1] = final_coords[:, 1]
         packed_data[:, 2] = node_views
         packed_data[:, 3] = full_degrees
         packed_data[:, 4] = node_cats
+        packed_data[:, 5] = node_community
         f.write(packed_data.tobytes())
 
     print(f"Done! Saved enriched coordinates to {out_bin} in {time.time() - start_export:.2f} seconds.")
