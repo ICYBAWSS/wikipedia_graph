@@ -45,11 +45,11 @@ render() {
         --output "variant_$1.png" $2
 }
 
-# New wheel-spread palette. Test plain vs Biography-demoted vs strong-demote.
-render "palette_plain"   "--edges-off"
-render "demote_bio_04"   "--edges-off --cat-weights 0:0.4"
-render "demote_bio_025"  "--edges-off --cat-weights 0:0.25"
-render "demote_edges"    "--edge-alpha 25 --cat-weights 0:0.4"
+# Community coloring (each Louvain lobe a distinct hue) vs category, with edges.
+render "community_noedge" "--color-by community --edges-off"
+render "community_web40"  "--color-by community --edge-alpha 40"
+render "community_web75"  "--color-by community --edge-alpha 75"
+render "category_web40"   "--color-by category --edge-alpha 40"
 
 echo ""
 echo "=== VARIANTS COMPLETE $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

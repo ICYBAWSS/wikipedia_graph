@@ -52,15 +52,13 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
         raw_cp = cp.fromfile(f, dtype=cp.float32)
         
     total_floats = len(raw_cp)
-    cols = 5
-    if total_floats % 5 == 0:
-        cols = 5
-    elif total_floats % 4 == 0:
-        cols = 4
-        print("  Warning: Coordinates file has 4 columns (no category data). Coloring will be default.")
-    else:
-        cols = total_floats // num_nodes
-        print(f"  Detected columns per node: {cols}")
+    # Columns per node is exactly total_floats / num_nodes (num_nodes is in the
+    # header). The old modulo-guessing mis-read 6-col bins as 4 because 6*N is
+    # divisible by 4, silently dropping category AND community data.
+    cols = total_floats // num_nodes
+    print(f"  Detected {cols} columns per node.")
+    if cols < 5:
+        print("  Warning: <5 columns (no category data). Coloring will be default.")
         
     raw_cp = raw_cp[:num_nodes * cols].reshape(num_nodes, cols)
     
