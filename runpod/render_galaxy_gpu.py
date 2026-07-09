@@ -250,76 +250,102 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
     px_supernova = max(3, int(width / 5000))
     print(f"  Astronomical spread widths: dust={px_dust}px, stars={px_stars}px, supernova={px_supernova}px")
     
-    img_nodes = None
-    
-    # Process each category sequentially on the GPU, clearing memory in-between
-    for c, color in color_key.items():
-        df_nodes_c = df_nodes[df_nodes['category'] == c]
-        num_c = len(df_nodes_c)
-        if num_c == 0:
-            continue
-            
-        print(f"  Aggregating and shading category {c} ({num_c:,} nodes) with astronomical tiers...")
-        dim_color = dim_hex_color(color, factor=0.35)
-        
-        # Split nodes in this category into three tiers based on pageviews
-        if num_c > 100:
-            views_c = df_nodes_c['views']
-            q995 = float(views_c.quantile(0.995))
-            q95 = float(views_c.quantile(0.95))
-            
-            df_supernova = df_nodes_c[df_nodes_c['views'] >= q995]
-            df_stars = df_nodes_c[(df_nodes_c['views'] >= q95) & (df_nodes_c['views'] < q995)]
-            df_dust = df_nodes_c[df_nodes_c['views'] < q95]
-        else:
-            df_supernova = df_nodes_c.head(0)
-            df_stars = df_nodes_c.head(0)
-            df_dust = df_nodes_c
+    import xarray as xr
 
-        # 1. Render Dust (smallest size)
-        img_dust = None
-        if len(df_dust) > 0:
-            agg_dust = cvs.points(df_dust, 'x', 'y', ds.count())
-            # Shade from dim_color to vibrant color so nodes are visible on black
-            img_dust = tf.shade(agg_dust, cmap=[dim_color, color], how='eq_hist')
-            img_dust = tf.spread(img_dust, px=px_dust)
-            del agg_dust
+    def hex_to_rgb(h):
+        h = h.lstrip('#')
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
-        # 2. Render Bright Stars (medium size)
-        img_stars = None
-        if len(df_stars) > 0:
-            agg_stars = cvs.points(df_stars, 'x', 'y', ds.count())
-            img_stars = tf.shade(agg_stars, cmap=[dim_color, color], how='eq_hist')
-            img_stars = tf.spread(img_stars, px=px_stars)
-            del agg_stars
+    # Categories actually present in the data (skip empty ones cheaply)
+    cats_present = [c for c in color_key if int((df_nodes['category'] == c).sum()) > 0]
 
-        # 3. Render Supernovas (large size)
-        img_supernova = None
-        if len(df_supernova) > 0:
-            agg_supernova = cvs.points(df_supernova, 'x', 'y', ds.count())
-            img_supernova = tf.shade(agg_supernova, cmap=[dim_color, color], how='eq_hist')
-            img_supernova = tf.spread(img_supernova, px=px_supernova)
-            del agg_supernova
+    # Color lookup table indexed by category id; row (maxc+1) is the black
+    # "no winner" slot for empty pixels.
+    maxc = max(cats_present) if cats_present else 0
+    lut = cp.zeros((maxc + 2, 3), dtype=cp.float32)
+    for c in cats_present:
+        lut[c] = cp.asarray(hex_to_rgb(color_key[c]), dtype=cp.float32)
 
-        # Stack the sizes for this category (now fully safe on GPU)
-        img_c = None
-        for img_tier in [img_dust, img_stars, img_supernova]:
-            if img_tier is not None:
-                if img_c is None:
-                    img_c = img_tier
-                else:
-                    img_c = tf.stack(img_c, img_tier, how='over')
+    def wta_tier(df_tier, spread_px, floor, gamma=0.5):
+        """Winner-take-all RGBA image for a node subset.
 
-        if img_c is not None:
-            if img_nodes is None:
-                img_nodes = img_c
-            else:
-                img_nodes = tf.stack(img_nodes, img_c, how='over')
-            
-        # Free memory block-by-block
-        del df_nodes_c, df_supernova, df_stars, df_dust, img_dust, img_stars, img_supernova, img_c
+        For each pixel, pick the category with the most nodes there and color
+        by it — so no category is privileged by draw order (the old bug where
+        higher-index green/gold were stacked over red/magenta). Uses only
+        ds.count() per category (guaranteed on the GPU path), incrementally
+        tracking the per-pixel argmax to avoid materializing an (H,W,C) cube.
+        """
+        if len(df_tier) == 0:
+            return None
+        total = best = winner = coords_ref = None
+        for c in cats_present:
+            df_c = df_tier[df_tier['category'] == c]
+            if len(df_c) == 0:
+                continue
+            agg_c = cvs.points(df_c, 'x', 'y', ds.count())
+            coords_ref = agg_c
+            cnt = agg_c.data.astype(cp.float32)
+            if total is None:
+                total = cp.zeros(cnt.shape, dtype=cp.float32)
+                best = cp.zeros(cnt.shape, dtype=cp.float32)
+                winner = cp.full(cnt.shape, -1, dtype=cp.int32)
+            total += cnt
+            take = cnt > best
+            winner = cp.where(take, cp.int32(c), winner)
+            best = cp.where(take, cnt, best)
+            del cnt, take, df_c
+            cp.get_default_memory_pool().free_all_blocks()
+        if total is None:
+            return None
+
+        # Rank-based histogram equalization of total count over non-empty pixels
+        # (matches Datashader eq_hist: uniform brightness distribution across ranks)
+        mask = total > 0
+        intensity = cp.zeros(total.shape, dtype=cp.float32)
+        n = int(mask.sum())
+        if n > 0:
+            vals = total[mask]
+            ranks = cp.argsort(cp.argsort(vals)).astype(cp.float32) / max(n - 1, 1)
+            intensity[mask] = floor + (1.0 - floor) * (ranks ** gamma)
+
+        widx = cp.where(winner < 0, maxc + 1, winner)  # empty pixels -> black row
+        r = (lut[:, 0][widx] * intensity).astype(cp.uint32)
+        g = (lut[:, 1][widx] * intensity).astype(cp.uint32)
+        b = (lut[:, 2][widx] * intensity).astype(cp.uint32)
+        a = mask.astype(cp.uint32) * 255
+        packed = r | (g << 8) | (b << 16) | (a << 24)  # datashader RGBA uint32
+
+        img = tf.Image(xr.DataArray(packed, coords=coords_ref.coords, dims=coords_ref.dims))
+        img = tf.spread(img, px=spread_px)
+        del total, best, winner, intensity, widx, r, g, b, a, mask, packed
         cp.get_default_memory_pool().free_all_blocks()
-        
+        return img
+
+    # Split ALL nodes into three view-based size tiers, then WTA-composite each.
+    # Tiers stack by SIZE (dust bottom, supernova top) — a legitimate ordering
+    # (more-viewed nodes drawn larger and on top), not a per-category bias.
+    if len(df_nodes) > 100:
+        q995 = float(df_nodes['views'].quantile(0.995))
+        q95 = float(df_nodes['views'].quantile(0.95))
+        df_dust = df_nodes[df_nodes['views'] < q95]
+        df_stars = df_nodes[(df_nodes['views'] >= q95) & (df_nodes['views'] < q995)]
+        df_supernova = df_nodes[df_nodes['views'] >= q995]
+    else:
+        df_dust, df_stars, df_supernova = df_nodes, df_nodes.head(0), df_nodes.head(0)
+
+    print(f"  Winner-take-all compositing: dust={len(df_dust):,} "
+          f"stars={len(df_stars):,} supernova={len(df_supernova):,}")
+
+    img_nodes = None
+    for df_tier, spx, fl in [(df_dust, px_dust, 0.12),
+                             (df_stars, px_stars, 0.45),
+                             (df_supernova, px_supernova, 0.75)]:
+        tier_img = wta_tier(df_tier, spx, floor=fl)
+        if tier_img is not None:
+            img_nodes = tier_img if img_nodes is None else tf.stack(img_nodes, tier_img, how='over')
+        del df_tier
+        cp.get_default_memory_pool().free_all_blocks()
+
     if img_nodes is None:
         print("  Warning: No category nodes found. Rendering fallback default aggregation...")
         agg_nodes = cvs.points(df_nodes, 'x', 'y', ds.count())
