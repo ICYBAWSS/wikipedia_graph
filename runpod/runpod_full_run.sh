@@ -46,6 +46,21 @@ upload_run_log() {
 }
 trap upload_run_log EXIT
 
+# Heartbeat: every 3 min, push the tail of the live log + a timestamp to HF so a
+# remote watcher can confirm the container is actually executing (pod status and
+# uptimeSeconds are unreliable) and see which stage it's on. Backgrounded; killed on exit.
+heartbeat() {
+    while true; do
+        sleep 180
+        [ -n "${HF_TOKEN:-}" ] || continue
+        { echo "beat=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "--- last log lines ---"; tail -n 5 full_run.log 2>/dev/null; } > heartbeat.txt
+        hf_cli upload "$HF_REPO" heartbeat.txt runs/full_heartbeat.txt --repo-type dataset >/dev/null 2>&1 || true
+    done
+}
+heartbeat &
+HEARTBEAT_PID=$!
+trap 'kill $HEARTBEAT_PID 2>/dev/null; upload_run_log' EXIT
+
 echo ""
 echo "--- Step 1: Environment preflight ---"
 python runpod_check_env.py
