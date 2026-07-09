@@ -36,9 +36,10 @@ def dim_hex_color(hex_color, factor=0.25):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
-               edge_curve=0.0, edge_alpha=90, edges_off=False):
+               edge_curve=0.0, edge_alpha=90, edges_off=False, cat_weights=None):
     print("--- GPU-Accelerated Datashader Renderer ---")
     print(f"  Edge settings: {'OFF' if edges_off else 'ON'} curve={edge_curve} alpha={edge_alpha}")
+    print(f"  Category dominance weights: {cat_weights or 'all 1.0'}")
     start_total = time.time()
     
     # 1. Read Binary Coordinates
@@ -231,18 +232,19 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
     print("Step 5: Rendering nodes (point aggregation category-by-category)...")
     start_render_nodes = time.time()
     
+    # Hues spread maximally around the color wheel. The 4 dominant categories
+    # (Biography/Other/Art/Geography = 88% of nodes) get red/yellow/blue/green —
+    # ~90 deg apart, instantly distinguishable — instead of four warm reds.
     color_key = {
-        # Hues assigned by population: the 4 dominant categories (89% of nodes)
-        # get maximally separated colors; rare categories take the in-between hues.
-        0: '#ff1a1a',  # Biography & People (27.6%) - Red
-        1: '#00ffff',  # Science & Technology (2.8%) - Cyan
-        2: '#ff8000',  # History & Society (7.7%) - Orange
-        3: '#ff00ff',  # Art & Culture (19.4%) - Magenta
-        4: '#ff3399',  # Philosophy & Religion (1.3%) - Hot Pink
-        5: '#33ff33',  # Geography & Places (18.3%) - Lime Green
-        6: '#ffcc00',  # Other & General (22.9%) - Gold
-        7: '#50c878',  # Sports (unpopulated) - Emerald
-        8: '#3399ff'   # Business (unpopulated) - Blue
+        0: '#ff2020',  # Biography & People (27.6%) - Red        (hue 0)
+        1: '#00e5ff',  # Science & Technology (2.8%) - Cyan      (hue 190)
+        2: '#ff8a00',  # History & Society (7.7%) - Orange       (hue 33)
+        3: '#2a6bff',  # Art & Culture (19.4%) - Blue            (hue 220)
+        4: '#c04dff',  # Philosophy & Religion (1.3%) - Violet   (hue 275)
+        5: '#2bd94b',  # Geography & Places (18.3%) - Green      (hue 133)
+        6: '#ffe000',  # Other & General (22.9%) - Yellow        (hue 53)
+        7: '#ff2e8b',  # Sports (unpopulated) - Pink             (hue 330)
+        8: '#00d9a6'   # Business (unpopulated) - Teal           (hue 166)
     }
     
     px_dust = max(1, int(width / 16000))
@@ -258,6 +260,9 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
 
     # Categories actually present in the data (skip empty ones cheaply)
     cats_present = [c for c in color_key if int((df_nodes['category'] == c).sum()) > 0]
+
+    # Per-category dominance weights (parsed from --cat-weights "0:0.4,3:1.2" etc.)
+    cat_weight = dict(cat_weights or {})
 
     # Color lookup table indexed by category id; row (maxc+1) is the black
     # "no winner" slot for empty pixels.
@@ -299,11 +304,15 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
                 total = cp.zeros(cnt.shape, dtype=cp.float32)
                 best = cp.zeros(cnt.shape, dtype=cp.float32)
                 winner = cp.full(cnt.shape, -1, dtype=cp.int32)
-            total += cnt
-            take = cnt > best
+            total += cnt  # brightness uses raw counts
+            # Dominance uses WEIGHTED counts: demoting a category (weight < 1) lets
+            # it win only where it truly dominates, so e.g. Biography stops painting
+            # every Art/Science region red just by being the global plurality.
+            score = cnt * cat_weight.get(c, 1.0)
+            take = score > best
             winner = cp.where(take, cp.int32(c), winner)
-            best = cp.where(take, cnt, best)
-            del cnt, take, df_c, agg_c
+            best = cp.where(take, score, best)
+            del cnt, score, take, df_c, agg_c
             cp.get_default_memory_pool().free_all_blocks()
         if total is None:
             return None
@@ -405,8 +414,15 @@ if __name__ == "__main__":
     parser.add_argument("--edges-off", action="store_true", help="Render nodes only, no filaments")
     parser.add_argument("--edge-curve", type=float, default=0.0, help="Sideways edge bow as fraction of length (0=straight, never toward center)")
     parser.add_argument("--edge-alpha", type=int, default=90, help="Max opacity of the filament layer (0-255); lower = less core washout")
+    parser.add_argument("--cat-weights", type=str, default="", help="Per-category dominance multipliers, e.g. '0:0.4' to demote Biography")
 
     args = parser.parse_args()
+
+    cat_weights = {}
+    if args.cat_weights:
+        for pair in args.cat_weights.split(","):
+            k, v = pair.split(":")
+            cat_weights[int(k)] = float(v)
     
     # Fallback paths check
     bin_file = args.bin
@@ -427,4 +443,5 @@ if __name__ == "__main__":
         output_img = get_next_output_path("massive_galaxy_gpu")
         
     render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample,
-               edge_curve=args.edge_curve, edge_alpha=args.edge_alpha, edges_off=args.edges_off)
+               edge_curve=args.edge_curve, edge_alpha=args.edge_alpha, edges_off=args.edges_off,
+               cat_weights=cat_weights)

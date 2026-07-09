@@ -45,10 +45,11 @@ render() {
         --output "variant_$1.png" $2
 }
 
-render "straight_dim"   "--edge-alpha 55"
-render "straight_faint" "--edge-alpha 25"
-render "nodes_only"     "--edges-off"
-render "curve_soft"     "--edge-curve 0.15 --edge-alpha 55"
+# New wheel-spread palette. Test plain vs Biography-demoted vs strong-demote.
+render "palette_plain"   "--edges-off"
+render "demote_bio_04"   "--edges-off --cat-weights 0:0.4"
+render "demote_bio_025"  "--edges-off --cat-weights 0:0.25"
+render "demote_edges"    "--edge-alpha 25 --cat-weights 0:0.4"
 
 echo ""
 echo "=== VARIANTS COMPLETE $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
