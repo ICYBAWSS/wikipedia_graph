@@ -382,12 +382,10 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
     else:
         final_img = img_nodes
 
-    # Match the export path proven in earlier runs: hand export_image a bare
-    # host-side DataArray (never a GPU-backed one).
+    # export_image (set_background) requires a datashader Image, not a bare
+    # DataArray — keep it as tf.Image and ensure it is host-backed.
     if hasattr(final_img.data, 'get'):
-        final_img = xr.DataArray(final_img.data.get(), coords=final_img.coords, dims=final_img.dims)
-    else:
-        final_img = xr.DataArray(final_img.data, coords=final_img.coords, dims=final_img.dims)
+        final_img = tf.Image(xr.DataArray(final_img.data.get(), coords=final_img.coords, dims=final_img.dims))
 
     # Remove file extension from output name since export_image appends .png
     base_output = os.path.splitext(output_name)[0]

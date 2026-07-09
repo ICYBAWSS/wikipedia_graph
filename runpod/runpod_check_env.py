@@ -177,7 +177,10 @@ def main():
         edge = tf.Image(xr.DataArray(edge_data, coords=coords, dims=edge.dims))
         stacked = tf.stack(edge, img_a, how="over")
         assert not hasattr(stacked.data, "get"), "final composite must be host-side"
-        return "maximum_filter spread -> packed RGBA -> host Image -> CPU tf.stack ok"
+        # export_image path: set_background is strict about the Image type
+        from datashader.transfer_functions import set_background
+        set_background(stacked, "black")
+        return "maximum_filter spread -> host Image -> CPU tf.stack -> set_background ok"
     check("winner-take-all render path", wta_check)
 
     # --- Result ---
