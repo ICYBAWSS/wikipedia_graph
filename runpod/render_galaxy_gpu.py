@@ -266,17 +266,25 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
     for c in cats_present:
         lut[c] = cp.asarray(hex_to_rgb(color_key[c]), dtype=cp.float32)
 
+    from cupyx.scipy.ndimage import maximum_filter
+
     def wta_tier(df_tier, spread_px, floor, gamma=0.5):
-        """Winner-take-all RGBA image for a node subset.
+        """Winner-take-all RGBA image (numpy-backed) for a node subset.
 
         For each pixel, pick the category with the most nodes there and color
         by it — so no category is privileged by draw order (the old bug where
         higher-index green/gold were stacked over red/magenta). Uses only
         ds.count() per category (guaranteed on the GPU path), incrementally
         tracking the per-pixel argmax to avoid materializing an (H,W,C) cube.
+        Node "size" (spread) is applied in pure CuPy via maximum_filter on each
+        category's counts BEFORE the argmax — this keeps everything GPU-native
+        and avoids feeding a hand-built Image to tf.spread (whose CUDA path only
+        triggers for tf.shade output). The result is copied to host as a numpy
+        Image so the final composite uses Datashader's (validated) CPU tf.stack.
         """
         if len(df_tier) == 0:
             return None
+        ksize = 2 * spread_px + 1
         total = best = winner = coords_ref = None
         for c in cats_present:
             df_c = df_tier[df_tier['category'] == c]
@@ -285,6 +293,8 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
             agg_c = cvs.points(df_c, 'x', 'y', ds.count())
             coords_ref = agg_c
             cnt = agg_c.data.astype(cp.float32)
+            if ksize > 1:
+                cnt = maximum_filter(cnt, size=ksize)  # spread = dilate counts
             if total is None:
                 total = cp.zeros(cnt.shape, dtype=cp.float32)
                 best = cp.zeros(cnt.shape, dtype=cp.float32)
@@ -293,7 +303,7 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
             take = cnt > best
             winner = cp.where(take, cp.int32(c), winner)
             best = cp.where(take, cnt, best)
-            del cnt, take, df_c
+            del cnt, take, df_c, agg_c
             cp.get_default_memory_pool().free_all_blocks()
         if total is None:
             return None
@@ -313,11 +323,12 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         g = (lut[:, 1][widx] * intensity).astype(cp.uint32)
         b = (lut[:, 2][widx] * intensity).astype(cp.uint32)
         a = mask.astype(cp.uint32) * 255
-        packed = r | (g << 8) | (b << 16) | (a << 24)  # datashader RGBA uint32
+        packed = (r | (g << 8) | (b << 16) | (a << 24)).get()  # -> host numpy uint32
 
-        img = tf.Image(xr.DataArray(packed, coords=coords_ref.coords, dims=coords_ref.dims))
-        img = tf.spread(img, px=spread_px)
-        del total, best, winner, intensity, widx, r, g, b, a, mask, packed
+        # numpy coords so the DataArray is fully host-side (CPU tf.stack path)
+        coords = {k: np.asarray(v) for k, v in coords_ref.coords.items()}
+        img = tf.Image(xr.DataArray(packed, coords=coords, dims=coords_ref.dims))
+        del total, best, winner, intensity, widx, r, g, b, a, mask
         cp.get_default_memory_pool().free_all_blocks()
         return img
 
@@ -349,24 +360,34 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
     if img_nodes is None:
         print("  Warning: No category nodes found. Rendering fallback default aggregation...")
         agg_nodes = cvs.points(df_nodes, 'x', 'y', ds.count())
-        img_nodes = tf.shade(agg_nodes, cmap=['#333333', '#ffffff'], how='eq_hist')
-        img_nodes = tf.spread(img_nodes, px=px_dust)
-        
+        fb = tf.shade(agg_nodes, cmap=['#333333', '#ffffff'], how='eq_hist')
+        fb = tf.spread(fb, px=px_dust)
+        img_nodes = tf.Image(xr.DataArray(fb.data.get(), coords={k: np.asarray(v) for k, v in fb.coords.items()}, dims=fb.dims))
+
     print(f"  Nodes rendered in {time.time() - start_render_nodes:.2f}s.")
-    
+
     # 6. Blending and Saving
     print("Step 6: Blending layers and exporting static PNG image...")
     start_blend = time.time()
-    
+
+    # img_nodes is host/numpy (from wta_tier). Bring edges to host too so the
+    # final tf.stack runs on Datashader's validated CPU path with no device mix.
     if img_edges is not None:
+        if hasattr(img_edges.data, 'get'):
+            img_edges = tf.Image(xr.DataArray(
+                img_edges.data.get(),
+                coords={k: np.asarray(v) for k, v in img_edges.coords.items()},
+                dims=img_edges.dims))
         final_img = tf.stack(img_edges, img_nodes, how='over')
     else:
         final_img = img_nodes
-        
-    # Convert final stacked image to CPU right before saving to prevent device/type mismatches in export_image
+
+    # Match the export path proven in earlier runs: hand export_image a bare
+    # host-side DataArray (never a GPU-backed one).
     if hasattr(final_img.data, 'get'):
-        import xarray as xr
         final_img = xr.DataArray(final_img.data.get(), coords=final_img.coords, dims=final_img.dims)
+    else:
+        final_img = xr.DataArray(final_img.data, coords=final_img.coords, dims=final_img.dims)
 
     # Remove file extension from output name since export_image appends .png
     base_output = os.path.splitext(output_name)[0]

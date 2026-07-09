@@ -145,18 +145,20 @@ def main():
         return "cudf points -> shade(eq_hist, alpha) -> spread ok"
     check("datashader GPU aggregation", datashader_check)
 
-    # 4e. Winner-take-all render path: argsort eq_hist + custom-packed RGBA -> tf.Image -> spread
+    # 4e. Winner-take-all render path (mirrors render_galaxy_gpu.py exactly):
+    #     maximum_filter spread -> argsort eq_hist -> packed RGBA -> host Image -> CPU tf.stack
     def wta_check():
         import datashader as ds
         import datashader.transfer_functions as tf
         import xarray as xr
+        from cupyx.scipy.ndimage import maximum_filter
         pts = cudf.DataFrame({
             "x": cudf.Series(np.random.rand(500).astype(np.float32)),
             "y": cudf.Series(np.random.rand(500).astype(np.float32)),
         })
         cvs = ds.Canvas(plot_width=64, plot_height=64, x_range=(0, 1), y_range=(0, 1))
         agg = cvs.points(pts, "x", "y", ds.count())
-        total = agg.data.astype(cp.float32)
+        total = maximum_filter(agg.data.astype(cp.float32), size=3)  # GPU spread
         mask = total > 0
         vals = total[mask]
         ranks = cp.argsort(cp.argsort(vals)).astype(cp.float32) / max(int(mask.sum()) - 1, 1)
@@ -164,11 +166,15 @@ def main():
         inten[mask] = ranks
         packed = ((inten * 255).astype(cp.uint32)
                   | ((inten * 255).astype(cp.uint32) << 8)
-                  | (mask.astype(cp.uint32) * 255 << 24))
-        img = tf.Image(xr.DataArray(packed, coords=agg.coords, dims=agg.dims))
-        img = tf.spread(img, px=1)
-        assert hasattr(img.data, "get"), "expected CuPy-backed Image"
-        return "argsort eq_hist + packed RGBA -> tf.Image -> spread ok"
+                  | (mask.astype(cp.uint32) * 255 << 24)).get()  # -> host numpy
+        coords = {k: np.asarray(v) for k, v in agg.coords.items()}
+        img_a = tf.Image(xr.DataArray(packed, coords=coords, dims=agg.dims))
+        # host edges image + CPU stack (the real final-composite path)
+        edge = tf.shade(cvs.points(pts, "x", "y", ds.count()), cmap="#ffffff", how="eq_hist")
+        edge = tf.Image(xr.DataArray(edge.data.get(), coords=coords, dims=edge.dims))
+        stacked = tf.stack(edge, img_a, how="over")
+        assert not hasattr(stacked.data, "get"), "final composite must be host-side"
+        return "maximum_filter spread -> packed RGBA -> host Image -> CPU tf.stack ok"
     check("winner-take-all render path", wta_check)
 
     # --- Result ---
