@@ -61,6 +61,14 @@ echo "--- Step 3: FULL multi-stage layout compile (this is the long one) ---"
 python compile_galaxy_multistage.py \
     --ewi3 "$EWI3" --out coordinates_rapids.bin --diag diagnostic_layout.png
 
+# Upload the EXPENSIVE compile output immediately — before the render — so a
+# render OOM at 16k never forces a recompile (re-rendering is cheap by comparison).
+if [ "$UPLOAD" = "1" ]; then
+    echo "--- Step 3b: Uploading compile output to HF (pre-render safety) ---"
+    hf_cli upload "$HF_REPO" coordinates_rapids.bin coordinates_rapids.bin --repo-type dataset || true
+    hf_cli upload "$HF_REPO" diagnostic_layout.png renders/diagnostic_layout.png --repo-type dataset || true
+fi
+
 echo ""
 echo "--- Step 4: 16k GPU render ---"
 python render_galaxy_gpu.py --bin coordinates_rapids.bin \
@@ -68,9 +76,7 @@ python render_galaxy_gpu.py --bin coordinates_rapids.bin \
 
 echo ""
 if [ "$UPLOAD" = "1" ]; then
-    echo "--- Step 5: Uploading artifacts to HF ($HF_REPO) ---"
-    hf_cli upload "$HF_REPO" coordinates_rapids.bin coordinates_rapids.bin --repo-type dataset
-    hf_cli upload "$HF_REPO" diagnostic_layout.png renders/diagnostic_layout.png --repo-type dataset
+    echo "--- Step 5: Uploading render to HF ($HF_REPO) ---"
     hf_cli upload "$HF_REPO" massive_galaxy_full.png renders/massive_galaxy_full.png --repo-type dataset
 else
     echo "--- Step 5: Skipping upload (set UPLOAD=1 HF_TOKEN=... to enable) ---"
