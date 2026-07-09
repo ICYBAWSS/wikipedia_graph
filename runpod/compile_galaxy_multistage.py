@@ -15,7 +15,8 @@ except ImportError:
 
 def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metadata.csv",
                               out_bin="coordinates_rapids.bin", sample_frac=1.0,
-                              iters_scale=1.0, ewi3=0.4, diag_png="diagnostic_layout.png"):
+                              iters_scale=1.0, ewi3=0.4, diag_png="diagnostic_layout.png",
+                              spacing=3000.0, seed_disk=2.0, min_ring=0.0):
     # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
@@ -158,9 +159,11 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     sizes = sizes.sort_values('n', ascending=False).reset_index(drop=True)
     rank = cp.arange(len(sizes), dtype=cp.float64)
     golden_angle = np.pi * (3.0 - np.sqrt(5.0))
-    spacing = 3000.0
-    sizes['cx'] = spacing * cp.sqrt(rank) * cp.cos(rank * golden_angle)
-    sizes['cy'] = spacing * cp.sqrt(rank) * cp.sin(rank * golden_angle)
+    # min_ring pushes the innermost (biggest) communities off dead-center, opening
+    # a central void so they don't pile and overlap into a muddy core.
+    ring = cp.sqrt(rank + min_ring)
+    sizes['cx'] = spacing * ring * cp.cos(rank * golden_angle)
+    sizes['cy'] = spacing * ring * cp.sin(rank * golden_angle)
 
     # Scatter members in a disk around their community centroid (deterministic hash jitter,
     # disk radius ~ sqrt(community size) for uniform node density)
@@ -168,7 +171,7 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     n_max = float(sizes['n'].max())
     seed_cp = (cp.asarray(parts['vertex']).astype(cp.int64) * 1103515245 + 12345) & 0x7fffffff
     theta_cp = (seed_cp % 100000) / 100000.0 * 2.0 * np.pi
-    disk_r = 2.0 * spacing * cp.sqrt(cp.asarray(parts['n']).astype(cp.float64) / n_max)
+    disk_r = seed_disk * spacing * cp.sqrt(cp.asarray(parts['n']).astype(cp.float64) / n_max)
     r_cp = cp.sqrt((seed_cp // 100000 % 100000) / 100000.0) * disk_r
     parts['x'] = cudf.Series(cp.asarray(parts['cx']) + r_cp * cp.cos(theta_cp), index=parts.index)
     parts['y'] = cudf.Series(cp.asarray(parts['cy']) + r_cp * cp.sin(theta_cp), index=parts.index)
@@ -499,10 +502,14 @@ if __name__ == '__main__':
     parser.add_argument("--iters-scale", type=float, default=1.0, help="Scale all FA2 iteration counts (e.g. 0.2 for smoke tests)")
     parser.add_argument("--ewi3", type=float, default=0.4, help="Phase 3 edge_weight_influence (A/B: 0.0 vs 0.4)")
     parser.add_argument("--diag", type=str, default="diagnostic_layout.png", help="Diagnostic scatter plot filename")
+    parser.add_argument("--spacing", type=float, default=3000.0, help="Golden-spiral community spacing (lower = communities closer/more connected)")
+    parser.add_argument("--seed-disk", type=float, default=2.0, help="Seed disk radius scale (lower = tighter communities, less overlap)")
+    parser.add_argument("--min-ring", type=float, default=0.0, help="Central-void offset added to spiral rank (higher = bigger empty center)")
     args = parser.parse_args()
 
     compile_galaxy_multistage(
         edges_csv=args.edges, meta_csv=args.meta, out_bin=args.out,
         sample_frac=args.sample_frac, iters_scale=args.iters_scale,
-        ewi3=args.ewi3, diag_png=args.diag
+        ewi3=args.ewi3, diag_png=args.diag,
+        spacing=args.spacing, seed_disk=args.seed_disk, min_ring=args.min_ring
     )
