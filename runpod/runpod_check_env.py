@@ -169,9 +169,12 @@ def main():
                   | (mask.astype(cp.uint32) * 255 << 24)).get()  # -> host numpy
         coords = {k: np.asarray(v) for k, v in agg.coords.items()}
         img_a = tf.Image(xr.DataArray(packed, coords=coords, dims=agg.dims))
-        # host edges image + CPU stack (the real final-composite path)
+        # host edges image + CPU stack (the real final-composite path).
+        # tf.shade may return a host- or device-backed image depending on the
+        # datashader build; guard the .get() exactly as the renderer does.
         edge = tf.shade(cvs.points(pts, "x", "y", ds.count()), cmap="#ffffff", how="eq_hist")
-        edge = tf.Image(xr.DataArray(edge.data.get(), coords=coords, dims=edge.dims))
+        edge_data = edge.data.get() if hasattr(edge.data, "get") else edge.data
+        edge = tf.Image(xr.DataArray(edge_data, coords=coords, dims=edge.dims))
         stacked = tf.stack(edge, img_a, how="over")
         assert not hasattr(stacked.data, "get"), "final composite must be host-side"
         return "maximum_filter spread -> packed RGBA -> host Image -> CPU tf.stack ok"
