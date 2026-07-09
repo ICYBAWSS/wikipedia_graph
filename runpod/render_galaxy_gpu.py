@@ -35,8 +35,10 @@ def dim_hex_color(hex_color, factor=0.25):
     b = max(15, int(b * factor))
     return f"#{r:02x}{g:02x}{b:02x}"
 
-def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
+def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
+               edge_curve=0.0, edge_alpha=90, edges_off=False):
     print("--- GPU-Accelerated Datashader Renderer ---")
+    print(f"  Edge settings: {'OFF' if edges_off else 'ON'} curve={edge_curve} alpha={edge_alpha}")
     start_total = time.time()
     
     # 1. Read Binary Coordinates
@@ -105,8 +107,11 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
     print(f"Step 2: Loading edge list from {edges_csv}...")
     start_edges = time.time()
     
-    # Check if edges file exists
-    if not os.path.exists(edges_csv):
+    # Check if edges file exists / are disabled
+    if edges_off:
+        print("  Edges disabled (--edges-off) — rendering nodes only.")
+        df_lines = None
+    elif not os.path.exists(edges_csv):
         print(f"Error: Edges file {edges_csv} not found. Nodes will be rendered without filaments.")
         df_lines = None
     else:
@@ -144,54 +149,50 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         x_tgt = cp.asarray(edges_coords['x_tgt'])
         y_tgt = cp.asarray(edges_coords['y_tgt'])
 
-        # Compute edge distances on the GPU using pure CuPy to separate short-range and long-range edges
-        dx = x_tgt - x_src
-        dy = y_tgt - y_src
-        dist = cp.sqrt(dx**2 + dy**2)
-        
-        # Bends edges that span > 12% of the maximum edge distance in the graph
-        max_dist = float(dist.max())
-        threshold = max_dist * 0.12
-        
-        # Calculate midpoints (baseline control points)
-        mid_x = (x_src + x_tgt) / 2.0
-        mid_y = (y_src + y_tgt) / 2.0
-        
-        # Apply bending shift toward the coordinate center (0, 0)
-        bend_mask_cp = dist > threshold
-        p1_x = mid_x.copy()
-        p1_y = mid_y.copy()
-        
-        # Pull long-range edges 45% of the way toward the center to bundle them
-        p1_x[bend_mask_cp] = mid_x[bend_mask_cp] * 0.55
-        p1_y[bend_mask_cp] = mid_y[bend_mask_cp] * 0.55
-        
-        # Evaluate Quadratic Bezier curve at 5 points (t = 0.0, 0.25, 0.5, 0.75, 1.0)
-        # Plus 1 NaN point to separate the segment rendering
-        total_points = num_edges * 6
-        
-        lines_x = cp.empty(total_points, dtype=cp.float32)
-        lines_y = cp.empty(total_points, dtype=cp.float32)
-        
-        # evaluate formula: B(t) = (1-t)^2 * P0 + 2*(1-t)*t * P1 + t^2 * P2
-        for s_idx, t in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
-            b_x = (1.0 - t)**2 * x_src + 2.0 * (1.0 - t) * t * p1_x + t**2 * x_tgt
-            b_y = (1.0 - t)**2 * y_src + 2.0 * (1.0 - t) * t * p1_y + t**2 * y_tgt
-            
-            lines_x[s_idx::6] = b_x
-            lines_y[s_idx::6] = b_y
-            
-        # Add NaNs to separate lines in Datashader
-        lines_x[5::6] = cp.nan
-        lines_y[5::6] = cp.nan
-        
+        # Straight edges: endpoint -> endpoint, NaN separator (3 points per edge).
+        # NOTE: a previous version pulled every long edge's control point 45%
+        # toward the global origin (0,0) "to bundle them" — that funnels all
+        # filaments through the center and creates the washed-out white core.
+        # True bundling attracts edges to each other, not to the origin; straight
+        # lines are the honest default. (edge_curve>0 re-enables a mild outward
+        # arc that never passes through the center.)
+        if edge_curve > 0.0:
+            # Bow each edge sideways (perpendicular to itself), away from center,
+            # by a fraction of its own length — organic look, no origin funnel.
+            mid_x = (x_src + x_tgt) / 2.0
+            mid_y = (y_src + y_tgt) / 2.0
+            dx = x_tgt - x_src
+            dy = y_tgt - y_src
+            # perpendicular unit vector, oriented outward from origin
+            px = -dy
+            py = dx
+            plen = cp.sqrt(px * px + py * py) + 1e-6
+            outward = cp.sign(px * mid_x + py * mid_y)
+            outward = cp.where(outward == 0, 1.0, outward)
+            seglen = cp.sqrt(dx * dx + dy * dy)
+            p1_x = mid_x + (px / plen) * outward * seglen * edge_curve
+            p1_y = mid_y + (py / plen) * outward * seglen * edge_curve
+            lines_x = cp.empty(num_edges * 6, dtype=cp.float32)
+            lines_y = cp.empty(num_edges * 6, dtype=cp.float32)
+            for s_idx, t in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
+                lines_x[s_idx::6] = (1 - t) ** 2 * x_src + 2 * (1 - t) * t * p1_x + t ** 2 * x_tgt
+                lines_y[s_idx::6] = (1 - t) ** 2 * y_src + 2 * (1 - t) * t * p1_y + t ** 2 * y_tgt
+            lines_x[5::6] = cp.nan
+            lines_y[5::6] = cp.nan
+        else:
+            lines_x = cp.empty(num_edges * 3, dtype=cp.float32)
+            lines_y = cp.empty(num_edges * 3, dtype=cp.float32)
+            lines_x[0::3] = x_src; lines_y[0::3] = y_src
+            lines_x[1::3] = x_tgt; lines_y[1::3] = y_tgt
+            lines_x[2::3] = cp.nan; lines_y[2::3] = cp.nan
+
         df_lines = cudf.DataFrame({
             'x': lines_x,
             'y': lines_y
         })
         
         # Clean up intermediate DataFrames
-        del df_edges, edges_coords, lines_x, lines_y, dx, dy, dist, x_src, y_src, x_tgt, y_tgt, mid_x, mid_y, p1_x, p1_y, bend_mask_cp
+        del df_edges, edges_coords, lines_x, lines_y, x_src, y_src, x_tgt, y_tgt
         cp.get_default_memory_pool().free_all_blocks()
         
         print(f"  Mapped curves for {num_edges:,} edges in {time.time() - start_edges:.2f}s.")
@@ -220,9 +221,8 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample):
         agg_edges = cvs.line(df_lines, 'x', 'y', ds.count())
         
         # Pure white edges: single-color shading varies alpha by density (denser = more opaque).
-        # Alpha is capped at 150 so the filament layer stays translucent — the previous render
-        # showed unbounded white edges completely whiting out the periphery and burying node dust.
-        img_edges = tf.shade(agg_edges, cmap='#ffffff', how='eq_hist', alpha=150, min_alpha=8)
+        # edge_alpha caps the filament layer's opacity so dense bundles don't white out the map.
+        img_edges = tf.shade(agg_edges, cmap='#ffffff', how='eq_hist', alpha=edge_alpha, min_alpha=6)
         print(f"  Filaments rendered in {time.time() - start_render_edges:.2f}s.")
         del df_lines
         cp.get_default_memory_pool().free_all_blocks()
@@ -402,7 +402,10 @@ if __name__ == "__main__":
     parser.add_argument("--width", type=int, default=16000, help="Width of the output image in pixels")
     parser.add_argument("--height", type=int, default=16000, help="Height of the output image in pixels")
     parser.add_argument("--edge_sample", type=int, default=15000000, help="Number of edges to render for filaments (0 for all)")
-    
+    parser.add_argument("--edges-off", action="store_true", help="Render nodes only, no filaments")
+    parser.add_argument("--edge-curve", type=float, default=0.0, help="Sideways edge bow as fraction of length (0=straight, never toward center)")
+    parser.add_argument("--edge-alpha", type=int, default=90, help="Max opacity of the filament layer (0-255); lower = less core washout")
+
     args = parser.parse_args()
     
     # Fallback paths check
@@ -423,4 +426,5 @@ if __name__ == "__main__":
     if not output_img:
         output_img = get_next_output_path("massive_galaxy_gpu")
         
-    render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample)
+    render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample,
+               edge_curve=args.edge_curve, edge_alpha=args.edge_alpha, edges_off=args.edges_off)
