@@ -17,7 +17,8 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
                               out_bin="coordinates_rapids.bin", sample_frac=1.0,
                               iters_scale=1.0, ewi3=0.4, diag_png="diagnostic_layout.png",
                               spacing=3000.0, seed_disk=2.0, min_ring=0.0,
-                              seed_mode='communities'):
+                              seed_mode='communities', layout_mode='multistage',
+                              fa2_scaling=2.0, fa2_gravity=1.0, fa2_iters=1000):
     # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
@@ -107,9 +108,84 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     radius_scale = 1500.0 / float(np.percentile(raw_radii, 99.9))
     node_radii = raw_radii * radius_scale
     radius_gdf = cudf.DataFrame({
-        'vertex': cp.arange(num_nodes, dtype=np.int32), 
+        'vertex': cp.arange(num_nodes, dtype=np.int32),
         'radius': node_radii.astype(np.float32)
     })
+
+    # ===================================================================
+    # SIMPLE LAYOUT: single-pass ForceAtlas2 on the full graph — replicates
+    # the frontend's graphology force layout (which produces the reference web
+    # for 1000 nodes) but precomputed on GPU for all 8M. No backbone/gateway/
+    # blossom phases (that machinery is what collapses into rings/blobs).
+    # ===================================================================
+    if layout_mode == 'simple':
+        print("=== SIMPLE LAYOUT: single-pass ForceAtlas2 (frontend-style web) ===")
+        print("  Louvain on full graph for community coloring...")
+        parts, mod = cugraph.louvain(G)
+        print(f"  Louvain: {int(parts['partition'].nunique())} communities, modularity {mod:.4f}")
+        node_community = np.full(num_nodes, -1, dtype=np.int32)
+        pv = parts['vertex'].to_pandas().to_numpy(dtype=np.int32)
+        pc = parts['partition'].to_pandas().to_numpy(dtype=np.int32)
+        node_community[pv] = pc
+        del parts
+        cp.get_default_memory_pool().free_all_blocks()
+
+        print(f"  Running single-pass ForceAtlas2: scaling={fa2_scaling} gravity={fa2_gravity} iters={it(fa2_iters)}...")
+        t0 = time.time()
+        pos = cugraph.force_atlas2(
+            G,
+            max_iter=it(fa2_iters),
+            lin_log_mode=True,                        # clusters correspond to modularity
+            outbound_attraction_distribution=False,   # hubs pull neighbors into radial spikes
+            scaling_ratio=fa2_scaling,
+            strong_gravity_mode=False,
+            gravity=fa2_gravity,
+            edge_weight_influence=1.0,
+            prevent_overlapping=False,                # overlap prevention makes rings
+            barnes_hut_optimize=True,
+            verbose=True,
+        )
+        print(f"  FA2 complete in {time.time() - t0:.1f}s.")
+
+        pos = pos.sort_values('vertex')
+        xs = pos['x'].to_pandas().to_numpy(dtype=np.float32)
+        ys = pos['y'].to_pandas().to_numpy(dtype=np.float32)
+        vv = pos['vertex'].to_pandas().to_numpy(dtype=np.int32)
+        final_coords = np.zeros((num_nodes, 2), dtype=np.float32)
+        final_coords[vv, 0] = xs
+        final_coords[vv, 1] = ys
+        mask = np.ones(num_nodes, dtype=bool); mask[vv] = False
+        orphans = np.where(mask)[0]
+        if len(orphans) > 0:
+            if sample_frac < 1.0:
+                final_coords[orphans, :] = np.nan
+            else:
+                sv = float(np.nanstd(final_coords[vv]))
+                final_coords[orphans, 0] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
+                final_coords[orphans, 1] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
+
+        with open(out_bin, "wb") as f:
+            f.write(struct.pack("I", num_nodes))
+            pd6 = np.zeros((num_nodes, 6), dtype=np.float32)
+            pd6[:, 0] = final_coords[:, 0]; pd6[:, 1] = final_coords[:, 1]
+            pd6[:, 2] = node_views; pd6[:, 3] = full_degrees
+            pd6[:, 4] = node_cats; pd6[:, 5] = node_community
+            f.write(pd6.tobytes())
+        print(f"  Wrote {out_bin} (6-col with community).")
+
+        x_std = float(np.nanstd(final_coords[:, 0])); y_std = float(np.nanstd(final_coords[:, 1]))
+        print(f"  [Diagnostics] spread std(x)={x_std:.1f} std(y)={y_std:.1f}")
+        try:
+            import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+            idx = np.random.choice(vv, min(50000, len(vv)), replace=False)
+            plt.figure(figsize=(10, 10))
+            plt.scatter(final_coords[idx, 0], final_coords[idx, 1], s=0.4, alpha=0.5, c='red')
+            plt.title(f"Simple FA2 | scaling={fa2_scaling} gravity={fa2_gravity} sample={sample_frac}")
+            plt.savefig(diag_png, dpi=150); plt.close()
+            print(f"  [Diagnostics] saved {diag_png}")
+        except Exception as ex:
+            print(f"  [Diagnostics] warn: {ex}")
+        return
 
     # --- MULTI-STAGE STEP 1: Core Backbone Extraction ---
     print("Step 4: Running k-core decomposition to extract structural backbone...")
@@ -534,6 +610,10 @@ if __name__ == '__main__':
     parser.add_argument("--seed-disk", type=float, default=2.0, help="Seed disk radius scale (lower = tighter communities, less overlap)")
     parser.add_argument("--min-ring", type=float, default=0.0, help="Central-void offset added to spiral rank (higher = bigger empty center)")
     parser.add_argument("--seed-mode", type=str, default="communities", choices=["communities", "organic"], help="'communities' = disk-seed per Louvain community; 'organic' = let FA2 find natural web structure")
+    parser.add_argument("--layout", type=str, default="multistage", choices=["multistage", "simple"], help="'simple' = single-pass FA2 web (frontend-style); 'multistage' = 4-phase community pipeline")
+    parser.add_argument("--fa2-scaling", type=float, default=2.0, help="[simple] FA2 scaling_ratio (lower = tighter clusters)")
+    parser.add_argument("--fa2-gravity", type=float, default=1.0, help="[simple] FA2 gravity (higher = tighter overall)")
+    parser.add_argument("--fa2-iters", type=int, default=1000, help="[simple] FA2 iterations")
     args = parser.parse_args()
 
     compile_galaxy_multistage(
@@ -541,5 +621,6 @@ if __name__ == '__main__':
         sample_frac=args.sample_frac, iters_scale=args.iters_scale,
         ewi3=args.ewi3, diag_png=args.diag,
         spacing=args.spacing, seed_disk=args.seed_disk, min_ring=args.min_ring,
-        seed_mode=args.seed_mode
+        seed_mode=args.seed_mode, layout_mode=args.layout,
+        fa2_scaling=args.fa2_scaling, fa2_gravity=args.fa2_gravity, fa2_iters=args.fa2_iters
     )
