@@ -37,9 +37,9 @@ def dim_hex_color(hex_color, factor=0.25):
 
 def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
                edge_curve=0.0, edge_alpha=90, edges_off=False, cat_weights=None,
-               color_by='category'):
+               color_by='category', nodes_off=False, edge_color='#ffffff', bg_color='black'):
     print("--- GPU-Accelerated Datashader Renderer ---")
-    print(f"  Edge settings: {'OFF' if edges_off else 'ON'} curve={edge_curve} alpha={edge_alpha}")
+    print(f"  Edges: {'OFF' if edges_off else 'ON'} color={edge_color} alpha={edge_alpha} curve={edge_curve} | nodes_off={nodes_off} bg={bg_color}")
     print(f"  Color by: {color_by} | dominance weights: {cat_weights or 'all 1.0'}")
     start_total = time.time()
     
@@ -225,13 +225,27 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
         start_render_edges = time.time()
         agg_edges = cvs.line(df_lines, 'x', 'y', ds.count())
         
-        # Pure white edges: single-color shading varies alpha by density (denser = more opaque).
-        # edge_alpha caps the filament layer's opacity so dense bundles don't white out the map.
-        img_edges = tf.shade(agg_edges, cmap='#ffffff', how='eq_hist', alpha=edge_alpha, min_alpha=6)
+        # Single-color edges: shading varies alpha by density (denser = more opaque).
+        # edge_alpha caps the filament layer's opacity so dense bundles don't wash out.
+        img_edges = tf.shade(agg_edges, cmap=edge_color, how='eq_hist', alpha=edge_alpha, min_alpha=6)
         print(f"  Filaments rendered in {time.time() - start_render_edges:.2f}s.")
         del df_lines
         cp.get_default_memory_pool().free_all_blocks()
-        
+
+    # Nodes-only-off shortcut: pure edge-web render (the force-directed "web" look).
+    if nodes_off:
+        import xarray as xr
+        print("Step 5: Nodes disabled (--nodes-off) — edge-web only.")
+        if img_edges is None:
+            print("  Nothing to render (no edges, no nodes)."); return
+        final_img = img_edges
+        if hasattr(final_img.data, 'get'):
+            final_img = tf.Image(xr.DataArray(final_img.data.get(), coords=final_img.coords, dims=final_img.dims))
+        base_output = os.path.splitext(output_name)[0]
+        export_image(final_img, base_output, background=bg_color, export_path=".")
+        print(f"  Edge-web image exported as {base_output}.png in {time.time() - start_total:.2f}s total.")
+        return
+
     # 5. Render Nodes (Points) Category-by-Category to conserve memory
     print("Step 5: Rendering nodes (point aggregation category-by-category)...")
     start_render_nodes = time.time()
@@ -415,7 +429,7 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
 
     # Remove file extension from output name since export_image appends .png
     base_output = os.path.splitext(output_name)[0]
-    export_image(final_img, base_output, background="black", export_path=".")
+    export_image(final_img, base_output, background=bg_color, export_path=".")
     
     print(f"  Image exported successfully as {base_output}.png in {time.time() - start_blend:.2f}s.")
     print(f"=== Total Rendering Time: {time.time() - start_total:.2f} seconds ===")
@@ -433,6 +447,9 @@ if __name__ == "__main__":
     parser.add_argument("--edge-alpha", type=int, default=90, help="Max opacity of the filament layer (0-255); lower = less core washout")
     parser.add_argument("--cat-weights", type=str, default="", help="Per-category dominance multipliers, e.g. '0:0.4' to demote Biography")
     parser.add_argument("--color-by", type=str, default="category", choices=["category", "community"], help="Color nodes by category or by Louvain community")
+    parser.add_argument("--nodes-off", action="store_true", help="Render edges only (force-directed web look)")
+    parser.add_argument("--edge-color", type=str, default="#ffffff", help="Edge color, e.g. '#d8cdb0' for tan filaments")
+    parser.add_argument("--bg-color", type=str, default="black", help="Background color, e.g. '#2c2720'")
 
     args = parser.parse_args()
 
@@ -462,4 +479,5 @@ if __name__ == "__main__":
         
     render_gpu(bin_file, edges_file, output_img, args.width, args.height, args.edge_sample,
                edge_curve=args.edge_curve, edge_alpha=args.edge_alpha, edges_off=args.edges_off,
-               cat_weights=cat_weights, color_by=args.color_by)
+               cat_weights=cat_weights, color_by=args.color_by, nodes_off=args.nodes_off,
+               edge_color=args.edge_color, bg_color=args.bg_color)
