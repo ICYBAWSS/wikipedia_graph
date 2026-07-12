@@ -22,7 +22,21 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
 
+    # Physics regime. 'communities' uses aggressive separation (high repulsion +
+    # overlap prevention) which needs disk-seeding or it collapses into rings.
+    # 'organic' uses standard force-directed physics (low repulsion, real gravity,
+    # NO overlap prevention) so ForceAtlas2 forms the natural filament/spike web.
+    WEB = (seed_mode == 'organic')
+    P_SCALING = 12.0 if WEB else 240.0
+    P_OVERLAP = (not WEB)
+    P_OAD = WEB  # outbound_attraction_distribution: spread hubs for the web look
+    def P_GRAV(community_value):
+        return 1.0 if WEB else community_value
+    def P_RADIUS(rgdf):
+        return rgdf if P_OVERLAP else None
+
     print("--- Wikipedia Galaxy Compiler (Multi-Stage Layout Mode) ---")
+    print(f"  Physics: seed_mode={seed_mode} scaling={P_SCALING} overlap={P_OVERLAP} oad={P_OAD}")
     print(f"  Config: edges={edges_csv} meta={meta_csv} out={out_bin}")
     print(f"  Config: sample_frac={sample_frac} iters_scale={iters_scale} phase3_ewi={ewi3}")
 
@@ -195,15 +209,15 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     pos_backbone = cugraph.force_atlas2(
         G_backbone,
         max_iter=it(600),  # 600 iterations for deep macro-continent relaxation
-        pos_list=seed_pos,  # Louvain-seeded start: refine continents, don't unmix a disk
-        lin_log_mode=True, 
-        outbound_attraction_distribution=False, # hubs pull neighbors closer
-        scaling_ratio=240.0, # wide separation for macro-continents (tripled from 80.0)
+        pos_list=seed_pos,  # Louvain-seeded start (None in organic mode)
+        lin_log_mode=True,
+        outbound_attraction_distribution=P_OAD,
+        scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=0.2, # relatively high gravity to prevent drifting core components
+        gravity=P_GRAV(0.2),
         edge_weight_influence=0.4, # balanced edge weight influence
-        prevent_overlapping=True, # prevent backbone overlap from the start
-        vertex_radius=radius_gdf_backbone,
+        prevent_overlapping=P_OVERLAP,
+        vertex_radius=P_RADIUS(radius_gdf_backbone),
         verbose=True
     )
     print(f"  Backbone simulation complete. ({time.time() - start_backbone_sim:.2f} seconds)")
@@ -365,13 +379,13 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             max_iter=iters_per_step,
             pos_list=current_pos,
             lin_log_mode=True,
-            outbound_attraction_distribution=False,
-            scaling_ratio=240.0, # tripled from 80.0
+            outbound_attraction_distribution=P_OAD,
+            scaling_ratio=P_SCALING,
             strong_gravity_mode=False,
-            gravity=0.05,  # lower gravity to allow peripheral trees to expand
+            gravity=P_GRAV(0.05),
             edge_weight_influence=0.4,
-            prevent_overlapping=True,
-            vertex_radius=radius_gdf,
+            prevent_overlapping=P_OVERLAP,
+            vertex_radius=P_RADIUS(radius_gdf),
             verbose=False
         )
         
@@ -402,13 +416,13 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         max_iter=it(80),
         pos_list=current_pos,
         lin_log_mode=True,
-        outbound_attraction_distribution=False,
-        scaling_ratio=240.0,  # Keep high to maintain strong repulsion
+        outbound_attraction_distribution=P_OAD,
+        scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=0.01,         # Low gravity to allow expansion
+        gravity=P_GRAV(0.01),
         edge_weight_influence=ewi3, # A/B-testable: 0.4 keeps mild weight signal, 0.0 = pure topology
-        prevent_overlapping=True,  # Prevent overlap earlier
-        vertex_radius=radius_gdf,
+        prevent_overlapping=P_OVERLAP,
+        vertex_radius=P_RADIUS(radius_gdf),
         verbose=True
     )
     
@@ -423,13 +437,13 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         max_iter=it(40),
         pos_list=current_pos,
         lin_log_mode=True,
-        outbound_attraction_distribution=False,
-        scaling_ratio=240.0,
+        outbound_attraction_distribution=P_OAD,
+        scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=0.01,
+        gravity=P_GRAV(0.01),
         edge_weight_influence=ewi3,
-        prevent_overlapping=True,
-        vertex_radius=radius_gdf,
+        prevent_overlapping=P_OVERLAP,
+        vertex_radius=P_RADIUS(radius_gdf),
         verbose=True
     )
     print(f"  Phase 3 complete in {time.time() - start_phase3:.2f} seconds.")
