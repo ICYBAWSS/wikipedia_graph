@@ -27,9 +27,12 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     # 'organic' uses standard force-directed physics (low repulsion, real gravity,
     # NO overlap prevention) so ForceAtlas2 forms the natural filament/spike web.
     WEB = (seed_mode == 'organic')
-    P_SCALING = 12.0 if WEB else 240.0
+    P_SCALING = 30.0 if WEB else 240.0
     P_OVERLAP = (not WEB)
-    P_OAD = WEB  # outbound_attraction_distribution: spread hubs for the web look
+    # OAD must be FALSE for the web look: hubs pull their neighbors into tight
+    # radial stars (the spikes in the reference). TRUE distributes the pull and
+    # smears everything into a uniform blob (which is what the first attempt did).
+    P_OAD = False
     def P_GRAV(community_value):
         return 1.0 if WEB else community_value
     def P_RADIUS(rgdf):
