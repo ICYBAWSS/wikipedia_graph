@@ -18,7 +18,8 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
                               iters_scale=1.0, ewi3=0.4, diag_png="diagnostic_layout.png",
                               spacing=3000.0, seed_disk=2.0, min_ring=0.0,
                               seed_mode='communities', layout_mode='multistage',
-                              fa2_scaling=2.0, fa2_gravity=1.0, fa2_iters=1000):
+                              fa2_scaling=2.0, fa2_gravity=1.0, fa2_iters=1000,
+                              umap_neighbors=15, umap_min_dist=0.1, umap_metric='cosine'):
     # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
@@ -181,6 +182,95 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             plt.figure(figsize=(10, 10))
             plt.scatter(final_coords[idx, 0], final_coords[idx, 1], s=0.4, alpha=0.5, c='red')
             plt.title(f"Simple FA2 | scaling={fa2_scaling} gravity={fa2_gravity} sample={sample_frac}")
+            plt.savefig(diag_png, dpi=150); plt.close()
+            print(f"  [Diagnostics] saved {diag_png}")
+        except Exception as ex:
+            print(f"  [Diagnostics] warn: {ex}")
+        return
+
+    # ===================================================================
+    # UMAP LAYOUT: structural embedding instead of a force layout.
+    # FA2 hairballs on scale-free graphs (hubs sink to the centroid) and the
+    # community/disk-seed regime only escapes that by IMPOSING geometry
+    # (golden-spiral rings + overlap-prevention annuli = the "artificial rings").
+    # UMAP has neither failure mode: position emerges from neighbor similarity,
+    # min_dist enforces a spacing floor so hubs can't collapse, and negative
+    # sampling separates clusters — organic islands, no imposed rings/blob.
+    # Embedding = each node's weighted adjacency row; cosine similarity = "share
+    # neighbors". UMAP builds its own kNN over those rows (not the raw edges),
+    # so it captures structural neighborhoods, not just direct links.
+    # ===================================================================
+    if layout_mode == 'umap':
+        print("=== UMAP LAYOUT: structural embedding (no imposed geometry) ===")
+        from cuml.manifold import UMAP
+        import cupyx.scipy.sparse as cusp
+
+        print("  Louvain on full graph for community coloring...")
+        parts, mod = cugraph.louvain(G)
+        print(f"  Louvain: {int(parts['partition'].nunique())} communities, modularity {mod:.4f}")
+        node_community = np.full(num_nodes, -1, dtype=np.int32)
+        pv = parts['vertex'].to_pandas().to_numpy(dtype=np.int32)
+        pc = parts['partition'].to_pandas().to_numpy(dtype=np.int32)
+        node_community[pv] = pc
+        del parts
+        cp.get_default_memory_pool().free_all_blocks()
+
+        # Symmetric weighted adjacency, compacted to nodes that actually have edges
+        # (degree-0 orphans have no structural signal — scattered as dust below).
+        # weight is already log1p-clamped (line ~86), so it's a bounded similarity.
+        src = gdf_edges['source'].values.astype(cp.int32)
+        dst = gdf_edges['destination'].values.astype(cp.int32)
+        w   = gdf_edges['weight'].values.astype(cp.float32)
+        present = cp.unique(cp.concatenate([src, dst]))          # compact node set (degree>0)
+        m = int(present.size)
+        rows = cp.searchsorted(present, cp.concatenate([src, dst])).astype(cp.int32)
+        cols = cp.searchsorted(present, cp.concatenate([dst, src])).astype(cp.int32)
+        vals = cp.concatenate([w, w])
+        A = cusp.coo_matrix((vals, (rows, cols)), shape=(m, m)).tocsr()
+        del src, dst, w, rows, cols, vals
+        cp.get_default_memory_pool().free_all_blocks()
+        print(f"  Adjacency built: {m:,} nodes with edges, {A.nnz:,} nnz.")
+
+        print(f"  Running UMAP: n_neighbors={umap_neighbors} min_dist={umap_min_dist} metric={umap_metric}...")
+        t0 = time.time()
+        emb = UMAP(n_neighbors=umap_neighbors, min_dist=umap_min_dist,
+                   metric=umap_metric, verbose=True).fit_transform(A)
+        emb = cp.asnumpy(emb)
+        print(f"  UMAP complete in {time.time() - t0:.1f}s.")
+
+        present_np = cp.asnumpy(present)
+        final_coords = np.zeros((num_nodes, 2), dtype=np.float32)
+        final_coords[present_np, 0] = emb[:, 0]
+        final_coords[present_np, 1] = emb[:, 1]
+
+        # Degree-0 orphans: NaN in smoke mode (excluded from render), dust otherwise
+        mask = np.ones(num_nodes, dtype=bool); mask[present_np] = False
+        orphans = np.where(mask)[0]
+        if len(orphans) > 0:
+            if sample_frac < 1.0:
+                final_coords[orphans, :] = np.nan
+            else:
+                sv = float(np.nanstd(final_coords[present_np]))
+                final_coords[orphans, 0] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
+                final_coords[orphans, 1] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
+
+        with open(out_bin, "wb") as f:
+            f.write(struct.pack("I", num_nodes))
+            pd6 = np.zeros((num_nodes, 6), dtype=np.float32)
+            pd6[:, 0] = final_coords[:, 0]; pd6[:, 1] = final_coords[:, 1]
+            pd6[:, 2] = node_views; pd6[:, 3] = full_degrees
+            pd6[:, 4] = node_cats; pd6[:, 5] = node_community
+            f.write(pd6.tobytes())
+        print(f"  Wrote {out_bin} (6-col with community).")
+
+        x_std = float(np.nanstd(final_coords[:, 0])); y_std = float(np.nanstd(final_coords[:, 1]))
+        print(f"  [Diagnostics] spread std(x)={x_std:.1f} std(y)={y_std:.1f}")
+        try:
+            import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+            idx = np.random.choice(present_np, min(50000, m), replace=False)
+            plt.figure(figsize=(10, 10))
+            plt.scatter(final_coords[idx, 0], final_coords[idx, 1], s=0.4, alpha=0.5, c='red')
+            plt.title(f"UMAP | n_neighbors={umap_neighbors} min_dist={umap_min_dist} sample={sample_frac}")
             plt.savefig(diag_png, dpi=150); plt.close()
             print(f"  [Diagnostics] saved {diag_png}")
         except Exception as ex:
@@ -610,10 +700,13 @@ if __name__ == '__main__':
     parser.add_argument("--seed-disk", type=float, default=2.0, help="Seed disk radius scale (lower = tighter communities, less overlap)")
     parser.add_argument("--min-ring", type=float, default=0.0, help="Central-void offset added to spiral rank (higher = bigger empty center)")
     parser.add_argument("--seed-mode", type=str, default="communities", choices=["communities", "organic"], help="'communities' = disk-seed per Louvain community; 'organic' = let FA2 find natural web structure")
-    parser.add_argument("--layout", type=str, default="multistage", choices=["multistage", "simple"], help="'simple' = single-pass FA2 web (frontend-style); 'multistage' = 4-phase community pipeline")
+    parser.add_argument("--layout", type=str, default="multistage", choices=["multistage", "simple", "umap"], help="'umap' = structural embedding (no hairball/rings); 'simple' = single-pass FA2 web; 'multistage' = 4-phase community pipeline")
     parser.add_argument("--fa2-scaling", type=float, default=2.0, help="[simple] FA2 scaling_ratio (lower = tighter clusters)")
     parser.add_argument("--fa2-gravity", type=float, default=1.0, help="[simple] FA2 gravity (higher = tighter overall)")
     parser.add_argument("--fa2-iters", type=int, default=1000, help="[simple] FA2 iterations")
+    parser.add_argument("--umap-neighbors", type=int, default=15, help="[umap] n_neighbors (lower = more local/fragmented, higher = smoother global)")
+    parser.add_argument("--umap-min-dist", type=float, default=0.1, help="[umap] min_dist spacing floor (higher = more even spread, kills hub collapse)")
+    parser.add_argument("--umap-metric", type=str, default="cosine", help="[umap] distance metric on adjacency rows (cosine = share-neighbors)")
     args = parser.parse_args()
 
     compile_galaxy_multistage(
@@ -622,5 +715,6 @@ if __name__ == '__main__':
         ewi3=args.ewi3, diag_png=args.diag,
         spacing=args.spacing, seed_disk=args.seed_disk, min_ring=args.min_ring,
         seed_mode=args.seed_mode, layout_mode=args.layout,
-        fa2_scaling=args.fa2_scaling, fa2_gravity=args.fa2_gravity, fa2_iters=args.fa2_iters
+        fa2_scaling=args.fa2_scaling, fa2_gravity=args.fa2_gravity, fa2_iters=args.fa2_iters,
+        umap_neighbors=args.umap_neighbors, umap_min_dist=args.umap_min_dist, umap_metric=args.umap_metric
     )
