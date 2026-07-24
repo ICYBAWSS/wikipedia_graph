@@ -19,7 +19,8 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
                               spacing=3000.0, seed_disk=2.0, min_ring=0.0,
                               seed_mode='communities', layout_mode='multistage',
                               fa2_scaling=2.0, fa2_gravity=1.0, fa2_iters=1000,
-                              umap_neighbors=15, umap_min_dist=0.1, umap_metric='cosine'):
+                              umap_neighbors=15, umap_min_dist=0.1, umap_metric='cosine',
+                              umap_dims=128):
     # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
@@ -231,11 +232,35 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         cp.get_default_memory_pool().free_all_blocks()
         print(f"  Adjacency built: {m:,} nodes with edges, {A.nnz:,} nnz.")
 
-        print(f"  Running UMAP: n_neighbors={umap_neighbors} min_dist={umap_min_dist} metric={umap_metric}...")
+        # cuml UMAP can't do sparse kNN on millions of rows (sparse nn_descent
+        # supports no metrics; sparse brute-force needs a fixed ~16GB workspace and
+        # OOMs). So first reduce each node to a dense low-dim structural signature
+        # via a 2-step degree-normalized random-walk diffusion of a random matrix
+        # (Johnson-Lindenstrauss): E = P·P·R with P = D^-1(A+I). Nodes with similar
+        # neighborhoods get similar rows; SpMM is ~2s and O(m·D) memory. Then dense
+        # nn_descent UMAP (fast, memory-safe, scales to 8M). Rows are L2-normalized
+        # so euclidean distance ≡ cosine similarity of the diffusion signatures.
+        D = umap_dims
+        print(f"  Building {D}-dim diffusion embedding (2-hop random-walk projection)...")
+        t0 = time.time()
+        A = A + cusp.identity(m, dtype=cp.float32, format='csr')       # self-loops
+        deg = cp.asarray(A.sum(axis=1)).ravel()
+        P = cusp.diags((1.0 / cp.maximum(deg, 1e-6)).astype(cp.float32)) @ A   # row-stochastic
+        del A; cp.get_default_memory_pool().free_all_blocks()
+        rng = cp.random.RandomState(42)
+        R = (rng.standard_normal((m, D)) / cp.sqrt(cp.float32(D))).astype(cp.float32)
+        E = P @ (P @ R)                                               # 2-step diffusion
+        nrm = cp.linalg.norm(E, axis=1, keepdims=True)
+        E = (E / cp.maximum(nrm, 1e-6)).astype(cp.float32)
+        del P, R; cp.get_default_memory_pool().free_all_blocks()
+        print(f"  Embedding ready {E.shape} in {time.time() - t0:.1f}s.")
+
+        print(f"  Running UMAP: n_neighbors={umap_neighbors} min_dist={umap_min_dist} metric=euclidean (nn_descent)...")
         t0 = time.time()
         emb = UMAP(n_neighbors=umap_neighbors, min_dist=umap_min_dist,
-                   metric=umap_metric, verbose=True).fit_transform(A)
+                   metric='euclidean', build_algo='nn_descent', verbose=True).fit_transform(E)
         emb = cp.asnumpy(emb)
+        del E; cp.get_default_memory_pool().free_all_blocks()
         print(f"  UMAP complete in {time.time() - t0:.1f}s.")
 
         present_np = cp.asnumpy(present)
@@ -706,7 +731,8 @@ if __name__ == '__main__':
     parser.add_argument("--fa2-iters", type=int, default=1000, help="[simple] FA2 iterations")
     parser.add_argument("--umap-neighbors", type=int, default=15, help="[umap] n_neighbors (lower = more local/fragmented, higher = smoother global)")
     parser.add_argument("--umap-min-dist", type=float, default=0.1, help="[umap] min_dist spacing floor (higher = more even spread, kills hub collapse)")
-    parser.add_argument("--umap-metric", type=str, default="cosine", help="[umap] distance metric on adjacency rows (cosine = share-neighbors)")
+    parser.add_argument("--umap-metric", type=str, default="cosine", help="[umap] (unused: diffusion embedding uses euclidean on L2-normalized rows)")
+    parser.add_argument("--umap-dims", type=int, default=128, help="[umap] diffusion embedding dimensionality fed to UMAP")
     args = parser.parse_args()
 
     compile_galaxy_multistage(
@@ -716,5 +742,6 @@ if __name__ == '__main__':
         spacing=args.spacing, seed_disk=args.seed_disk, min_ring=args.min_ring,
         seed_mode=args.seed_mode, layout_mode=args.layout,
         fa2_scaling=args.fa2_scaling, fa2_gravity=args.fa2_gravity, fa2_iters=args.fa2_iters,
-        umap_neighbors=args.umap_neighbors, umap_min_dist=args.umap_min_dist, umap_metric=args.umap_metric
+        umap_neighbors=args.umap_neighbors, umap_min_dist=args.umap_min_dist, umap_metric=args.umap_metric,
+        umap_dims=args.umap_dims
     )
