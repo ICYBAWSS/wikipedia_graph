@@ -58,10 +58,10 @@ for MD in $MINDISTS; do
     python render_galaxy_gpu.py --bin "coords_umap_${tag}.bin" \
         --width "$W" --height "$W" --output "umap_${tag}_edges.png" \
         --nodes-off --bg-color '#2c2720' --edge-alpha 45 --edge_sample 2000000
-    echo "--- render community coloring ---"
+    echo "--- render category coloring ---"
     python render_galaxy_gpu.py --bin "coords_umap_${tag}.bin" \
-        --width "$W" --height "$W" --output "umap_${tag}_community.png" \
-        --color-by community --bg-color '#2c2720' --edge-alpha 35 --edge_sample 2000000
+        --width "$W" --height "$W" --output "umap_${tag}_category.png" \
+        --color-by category --bg-color '#2c2720' --edge-alpha 35 --edge_sample 2000000
 done
 
 echo ""; echo "=== UMAP COMPLETE $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
