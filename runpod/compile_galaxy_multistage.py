@@ -241,18 +241,26 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         # nn_descent UMAP (fast, memory-safe, scales to 8M). Rows are L2-normalized
         # so euclidean distance ≡ cosine similarity of the diffusion signatures.
         D = umap_dims
-        print(f"  Building {D}-dim diffusion embedding (2-hop random-walk projection)...")
+        print(f"  Building {D}-dim multi-order random-projection embedding (RandNE-style)...")
         t0 = time.time()
         A = A + cusp.identity(m, dtype=cp.float32, format='csr')       # self-loops
         deg = cp.asarray(A.sum(axis=1)).ravel()
-        P = cusp.diags((1.0 / cp.maximum(deg, 1e-6)).astype(cp.float32)) @ A   # row-stochastic
+        P = cusp.diags((1.0 / cp.maximum(deg, 1e-6)).astype(cp.float32)) @ A   # row-stochastic transition
         del A; cp.get_default_memory_pool().free_all_blocks()
         rng = cp.random.RandomState(42)
-        R = (rng.standard_normal((m, D)) / cp.sqrt(cp.float32(D))).astype(cp.float32)
-        E = P @ (P @ R)                                               # 2-step diffusion
+        # RandNE: E = sum_k w_k P^k R  — mixes direct neighbors (k=1) through
+        # multi-hop community context (k=2,3). Using ONLY k=2 (the old recipe)
+        # washed out to a gaussian blob; multi-order keeps local + community scale.
+        U = (rng.standard_normal((m, D)) / cp.sqrt(cp.float32(D))).astype(cp.float32)
+        weights = [1.0, 1.0, 0.8, 0.6]                                # orders 0..3
+        E = weights[0] * U
+        for wk in weights[1:]:
+            U = P @ U
+            E = E + wk * U
+        E = E - E.mean(axis=0, keepdims=True)     # remove common-mode (stationary/degree) — the blob cause
         nrm = cp.linalg.norm(E, axis=1, keepdims=True)
         E = (E / cp.maximum(nrm, 1e-6)).astype(cp.float32)
-        del P, R; cp.get_default_memory_pool().free_all_blocks()
+        del P, U; cp.get_default_memory_pool().free_all_blocks()
         print(f"  Embedding ready {E.shape} in {time.time() - t0:.1f}s.")
 
         print(f"  Running UMAP: n_neighbors={umap_neighbors} min_dist={umap_min_dist} metric=euclidean (nn_descent)...")
