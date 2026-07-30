@@ -214,7 +214,15 @@ def render_gpu(bin_path, edges_csv, output_name, width, height, edge_sample,
     y_pad = (y_max - y_min) * 0.01 if y_max > y_min else 1.0
     x_range = (x_min - x_pad, x_max + x_pad)
     y_range = (y_min - y_pad, y_max + y_pad)
-    
+
+    # Optional zoom window (simulates UI zoom: re-render a spatial crop at full res).
+    # ZOOM_HALF set => window centered at (ZOOM_CX,ZOOM_CY) with that half-width.
+    _zh = os.environ.get('ZOOM_HALF')
+    if _zh:
+        _cx = float(os.environ.get('ZOOM_CX', '0')); _cy = float(os.environ.get('ZOOM_CY', '0')); _h = float(_zh)
+        x_range = (_cx - _h, _cx + _h); y_range = (_cy - _h, _cy + _h)
+        print(f"  [ZOOM] window center=({_cx:.0f},{_cy:.0f}) half={_h:.0f}")
+
     print(f"  Using ranges x: {x_range}, y: {y_range}")
     cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
     
