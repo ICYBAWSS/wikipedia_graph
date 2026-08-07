@@ -343,7 +343,7 @@ async function fetchLiveWikiSnippet(title) {
 
 // Setup panels collapsible toggles
 [['header-toggle','header-panel'],['legend-toggle','legend-panel'],['controls-toggle','controls-panel'],['stats-toggle','stats-panel']]
-  .forEach(([b,p])=>{ const bt=$(b),pn=$(p); if(bt&&pn) bt.onclick=()=>pn.classList.toggle('collapsed'); });
+  .forEach(([b,p])=>{ const bt=$(b),pn=$(p); if(bt&&pn) bt.onclick=()=>{ pn.classList.toggle('collapsed'); bt.classList.toggle('active'); }; });
 
 // Close detail sidebar
 // cull() is a closure local to run(), not in scope here — go through window.__wg
@@ -386,9 +386,21 @@ if(sbb) {
 // Load Coordinate Binaries and Connect SQLite VFS
 async function startVisualization() {
   if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
-  const [nbuf, ebuf, cbuf, cbufRev, tbuf] = await Promise.all([
+  // Only the two files needed to draw the galaxy block the first render. The
+  // adjacency CSRs and title index are each up to ~360MB and only matter once the
+  // user searches or finds a route — both of those already degrade to a live DB
+  // fallback until these resolve (see fetchNeighbours/findTitleIndexInTitlesBin), so
+  // fetching all five in one Promise.all was adding minutes to the very first paint
+  // for no reason. They're kicked off below and wired in whenever they land.
+  const [nbuf, ebuf] = await Promise.all([
     fetchAsset('viewer_full.bin'),
-    fetchAsset('edgeTgt.bin'),
+    fetchAsset('edgeTgt.bin')
+  ]);
+
+  const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
+  const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
+
+  Promise.all([
     // Full graph adjacency (CSR), OUT-edges — see build_adjacency_csr.py.
     // Optional: if this 404s or is stale, pathfinding just falls back to the live DB.
     fetchAsset('adjacency_csr.bin', true),
@@ -404,47 +416,45 @@ async function startVisualization() {
     // Title lookup for instant node->title resolution — see build_titles_index.py.
     // Optional: if this 404s, titles fall back to the "#idx" placeholder + DB query.
     fetchAsset('titles.bin', true)
-  ]);
-
-  const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
-  const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
-
-  if (cbuf) {
-    const header = new Uint32Array(cbuf, 0, 2);
-    const csrFileN = header[0], csrE = header[1];
-    if (csrFileN === N) {
-      csrOffsets = new Uint32Array(cbuf, 8, csrFileN + 1);
-      csrNeighbors = new Uint32Array(cbuf, 8 + (csrFileN + 1) * 4, csrE);
-      csrN = csrFileN;
-      console.log(`In-memory adjacency (out) loaded: ${csrN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
-    } else {
-      console.warn(`adjacency_csr.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for pathfinding`);
+  ]).then(([cbuf, cbufRev, tbuf]) => {
+    if (cbuf) {
+      const header = new Uint32Array(cbuf, 0, 2);
+      const csrFileN = header[0], csrE = header[1];
+      if (csrFileN === N) {
+        csrOffsets = new Uint32Array(cbuf, 8, csrFileN + 1);
+        csrNeighbors = new Uint32Array(cbuf, 8 + (csrFileN + 1) * 4, csrE);
+        csrN = csrFileN;
+        console.log(`In-memory adjacency (out) loaded: ${csrN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
+      } else {
+        console.warn(`adjacency_csr.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for pathfinding`);
+      }
     }
-  }
 
-  if (cbufRev) {
-    const header = new Uint32Array(cbufRev, 0, 2);
-    const csrFileN = header[0], csrE = header[1];
-    if (csrFileN === N) {
-      csrOffsetsRev = new Uint32Array(cbufRev, 8, csrFileN + 1);
-      csrNeighborsRev = new Uint32Array(cbufRev, 8 + (csrFileN + 1) * 4, csrE);
-      console.log(`In-memory adjacency (in) loaded: ${csrFileN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
-    } else {
-      console.warn(`adjacency_csr_rev.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for reverse pathfinding`);
+    if (cbufRev) {
+      const header = new Uint32Array(cbufRev, 0, 2);
+      const csrFileN = header[0], csrE = header[1];
+      if (csrFileN === N) {
+        csrOffsetsRev = new Uint32Array(cbufRev, 8, csrFileN + 1);
+        csrNeighborsRev = new Uint32Array(cbufRev, 8 + (csrFileN + 1) * 4, csrE);
+        console.log(`In-memory adjacency (in) loaded: ${csrFileN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
+      } else {
+        console.warn(`adjacency_csr_rev.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for reverse pathfinding`);
+      }
     }
-  }
 
-  if (tbuf) {
-    const tN = new Uint32Array(tbuf, 0, 1)[0];
-    if (tN === N) {
-      titleOffsets = new Uint32Array(tbuf, 4, tN + 1);
-      titleBytes = new Uint8Array(tbuf, 4 + (tN + 1) * 4);
-      titleDecoder = new TextDecoder('utf-8');
-      console.log(`Title index loaded: ${tN.toLocaleString()} titles`);
-    } else {
-      console.warn(`titles.bin node count (${tN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to per-node DB query for titles`);
+    if (tbuf) {
+      const tN = new Uint32Array(tbuf, 0, 1)[0];
+      if (tN === N) {
+        titleOffsets = new Uint32Array(tbuf, 4, tN + 1);
+        titleBytes = new Uint8Array(tbuf, 4 + (tN + 1) * 4);
+        titleDecoder = new TextDecoder('utf-8');
+        console.log(`Title index loaded: ${tN.toLocaleString()} titles`);
+        buildTitleSearchIndex();
+      } else {
+        console.warn(`titles.bin node count (${tN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to per-node DB query for titles`);
+      }
     }
-  }
+  }).catch(e => console.error('Background asset load failed:', e));
   px=new Float32Array(N); py=new Float32Array(N); const rad=new Float32Array(N), col=new Uint8Array(N*4);
   const deg=new Float32Array(N), cat=new Uint8Array(N);
   nodeDegrees = deg; // module-level pathfinders rank frontiers hub-first off this
@@ -1569,7 +1579,22 @@ async function executePathfinder(mode) {
     // Bidirectional BFS: meets in the middle from both ends, unweighted-graph
     // optimal in hop count. Simple BFS/DFS: textbook single-direction traversals,
     // no shortest-path guarantee for DFS — see runSimpleBFS/runSimpleDFS.
-    const onEndpoints = (s, e) => { searchStartIdx = s; searchEndIdx = e; };
+    const onEndpoints = (s, e) => {
+      searchStartIdx = s; searchEndIdx = e;
+      // Fly to the start node so the search animation is actually legible — without
+      // this the camera stays wherever it happened to be (often zoomed out enough
+      // that highlighted nodes are sub-pixel and the traversal edges are invisible
+      // among the background link haze, reading as "nothing is happening").
+      VS = {
+        ...VS,
+        target: [px[s], py[s], 0],
+        zoom: Math.max(VS.zoom, 2.5),
+        transitionDuration: 600,
+        transitionInterpolator: new LinearInterpolator({ transitionProps: ['target', 'zoom'] }),
+        transitionEasing: easeInOutQuad
+      };
+      deckgl.setProps({ viewState: VS });
+    };
     let path;
     if (mode === 'bidirectional') {
       path = await runBidirectionalBFS(startVal, endVal, { onEndpoints, onProgress: markSearchProgress });
@@ -2309,20 +2334,29 @@ async function runSimpleDFS(startId, endId, opts = {}) {
       const curr = stack.pop();
       const adjacency = await fetchNeighbours([curr], PRIORITY_CLICK, 'out');
 
+      // Batch onProgress once per popped node (like runSimpleBFS batches once per
+      // level), not once per neighbor. A hub node's out-degree can run into the
+      // thousands, and awaiting onProgress per-edge turned every hub the traversal
+      // popped into thousands of extra awaited round trips — that's what made this
+      // effectively hang for minutes on any search that touched a popular page.
+      const touchedEdges = [];
+      let found = -1;
       for (const neigh of adjacency.get(curr) || []) {
         if (visited.has(neigh)) continue;
         visited.add(neigh);
         preds.set(neigh, curr);
         stack.push(neigh);
-        await onProgress?.([[curr, neigh]]);
+        touchedEdges.push([curr, neigh]);
+        if (neigh === endIdx) found = neigh;
+      }
 
-        if (neigh === endIdx) {
-          const pathIndices = [];
-          let cur = neigh;
-          while (cur !== null && cur !== undefined) { pathIndices.push(cur); cur = preds.get(cur); }
-          pathIndices.reverse();
-          return await buildPathFromSimpleIndices(pathIndices);
-        }
+      if (touchedEdges.length > 0) await onProgress?.(touchedEdges);
+      if (found !== -1) {
+        const pathIndices = [];
+        let cur = found;
+        while (cur !== null && cur !== undefined) { pathIndices.push(cur); cur = preds.get(cur); }
+        pathIndices.reverse();
+        return await buildPathFromSimpleIndices(pathIndices);
       }
     }
   } catch (e) {
