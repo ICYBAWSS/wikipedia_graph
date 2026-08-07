@@ -498,7 +498,6 @@ async function startVisualization() {
   // Populate Stats Panel Default Count
   if($('stat-nodes')) $('stat-nodes').textContent = N.toLocaleString();
   if($('stat-links')) $('stat-links').textContent = (N * 25).toLocaleString();
-  if($('stat-hub')) $('stat-hub').textContent = "United States";
 
   // Try to connect to SQLite worker
   try {
