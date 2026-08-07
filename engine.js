@@ -530,8 +530,15 @@ async function startVisualization() {
               // read to roughly one chunk per second, which is what made traversals crawl.
             }
           }],
-          "libs/sqlite.worker.js",
-          "libs/sql-wasm.wasm"
+          // Fully-resolved absolute URLs, not bare relative paths: the worker
+          // script resolves its OWN relative URLs (e.g. sql-wasm.wasm) against
+          // its own location, not the page's -- "libs/sql-wasm.wasm" from inside
+          // a worker already loaded from .../libs/sqlite.worker.js doubled up to
+          // .../libs/libs/sql-wasm.wasm, 404ing (GH Pages' 404 HTML then got fed
+          // to WebAssembly.instantiate as if it were the wasm binary, hence the
+          // "expected magic word ... found 3c 21 44 4f" ("<!DO...") error).
+          new URL('libs/sqlite.worker.js', location.href).href,
+          new URL('libs/sql-wasm.wasm', location.href).href
         );
         db = worker.db;
         originalQuery = db.query.bind(db);
