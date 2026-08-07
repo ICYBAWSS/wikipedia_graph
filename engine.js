@@ -530,8 +530,8 @@ async function startVisualization() {
               // read to roughly one chunk per second, which is what made traversals crawl.
             }
           }],
-          "/libs/sqlite.worker.js",
-          "/libs/sql-wasm.wasm"
+          "libs/sqlite.worker.js",
+          "libs/sql-wasm.wasm"
         );
         db = worker.db;
         originalQuery = db.query.bind(db);
