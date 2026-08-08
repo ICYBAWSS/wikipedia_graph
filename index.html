@@ -119,7 +119,7 @@
         #header-panel {
             top: 20px;
             left: 20px;
-            padding: 24px;
+            padding: 20px;
             width: 380px;
             /* Bound the panel to the viewport and lay it out as a column, so a long
                route grows the results list instead of running off the bottom of the
@@ -222,14 +222,13 @@
         #stats-panel {
             bottom: 20px;
             left: 20px;
-            padding: 16px;
-            font-size: 13px;
-            color: var(--color-ash);
+            padding: 20px;
+            font-size: 12.5px;
             display: flex;
             flex-direction: column;
             gap: 10px;
             align-items: flex-start;
-            width: 200px;
+            width: 240px;
         }
         #stats-panel:not(.collapsed) {
             border-bottom-right-radius: 0;
@@ -250,27 +249,16 @@
             right: 20px;
             padding: 20px;
             width: 280px;
-            font-size: 13px;
+            font-size: 12.5px;
+            /* Capped to half the viewport (minus the two 20px edge margins) and
+               independently scrollable -- #legend-panel below shares the same right
+               edge, growing up from the bottom, so without a cap the two collide
+               whenever either has enough content to reach the middle of the screen. */
+            max-height: calc(50vh - 30px);
+            overflow-y: auto;
         }
         #controls-panel:not(.collapsed) {
             border-top-left-radius: 0;
-        }
-
-        .control-group {
-            margin-bottom: 20px;
-        }
-
-        .control-group:last-child {
-            margin-bottom: 0;
-        }
-
-        .control-label {
-            display: flex;
-            justify-content: space-between;
-            color: var(--color-ash);
-            margin-bottom: 10px;
-            font-weight: 400;
-            line-height: 1.5;
         }
 
         .control-slider {
@@ -549,9 +537,6 @@
     text-transform: uppercase;
 }
 
-            border-radius: var(--radius-cardssmall);
-        }
-
         .connection-item:last-child {
             border-bottom: none;
         }
@@ -641,8 +626,12 @@
         #legend-panel {
             bottom: 20px;
             right: 20px;
-            padding: 16px 20px;
+            padding: 20px;
             width: 240px;
+            /* See #controls-panel's matching cap -- same right edge, growing from the
+               opposite end, so each gets at most half the viewport. */
+            max-height: calc(50vh - 30px);
+            overflow-y: auto;
         }
         #legend-panel:not(.collapsed) {
             border-bottom-left-radius: 0;
@@ -737,7 +726,9 @@
             left: 20px;
         }
         #stats-toggle.active {
-            left: 220px;
+            /* #stats-panel is 240px wide at left:20px, so its right edge sits at
+               260px -- this used to be tuned for the panel's old 200px width. */
+            left: 260px;
             border-radius: 0 var(--radius-cards) var(--radius-cards) 0;
             border-left: none;
         }
@@ -887,9 +878,17 @@
             animation: jiggle 0.6s ease-in-out;
         }
 
-        /* Scrollbars */
+        /* Scrollbars -- one consistent look everywhere, vertical or horizontal,
+           Chromium/WebKit or Firefox. (The old rule only set `width`, which is a
+           WebKit vertical-scrollbar-only property; any horizontal scrollbar fell
+           back to the browser's default thick grey one instead of matching.) */
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: var(--color-graphite) transparent;
+        }
         ::-webkit-scrollbar {
             width: 6px;
+            height: 6px;
         }
         ::-webkit-scrollbar-track {
             background: transparent;
@@ -972,6 +971,19 @@
            category tags), without having to enumerate them. */
         body {
             text-shadow: var(--text-outline);
+        }
+
+        /* Plain white text in the four floating info/control panels, overriding the
+           --color-ash / --color-bone (grey / warm-beige) defaults used for labels
+           elsewhere -- higher contrast against the glass panel + graph behind it.
+           Elements that set their own color inline (e.g. the route list's
+           category-colored hop titles) aren't touched: an inline style always wins
+           over this regardless of source order. */
+        #header-panel, #header-panel *,
+        #stats-panel, #stats-panel *,
+        #controls-panel, #controls-panel *,
+        #legend-panel, #legend-panel * {
+            color: #fff;
         }
 
         /* Opt back out wherever dark text sits on a light fill — an outline there is
@@ -1151,14 +1163,14 @@
     <!-- UI Panel: Info -->
     <div id="stats-panel" class="panel glass collapsed">
         <div class="legend-title" style="margin-top: 4px; margin-bottom: 10px;">About this map</div>
-        <div style="font-size: 12.5px; color: var(--color-ash); line-height: 1.55;">
+        <div style="font-size: 12.5px; line-height: 1.55;">
             Every article on English Wikipedia, plotted as a dot and connected by its
-            real links — <strong id="stat-nodes" style="color: var(--color-bone);">-</strong> articles,
-            <strong id="stat-links" style="color: var(--color-bone);">-</strong> links between them.
+            real links. Right now that's <strong id="stat-nodes">-</strong> articles and
+            <strong id="stat-links">-</strong> links between them.
             <br><br>
             Click a dot to read it and see what it links to. Search jumps you straight
             to an article. The route finder traces a chain of real clickable links
-            between any two articles — no shortcuts.
+            between any two articles, no shortcuts.
         </div>
     </div>
 
@@ -1241,24 +1253,13 @@
     <div id="legend-panel" class="panel glass collapsed">
         <div class="legend-title">Categories</div>
         <div id="legend-list"></div>
-        <div class="legend-title" style="margin-top: 14px; border-top: 1px solid var(--color-graphite); padding-top: 10px; margin-bottom: 8px;">Key</div>
-        <div style="font-size: 12.5px; color: var(--color-ash); line-height: 1.45; display: flex; flex-direction: column; gap: 6px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-ash);"></span>
-                <span><strong>Size</strong>: Correlates to connections</span>
-            </div>
-            <div style="display: flex; align-items: start; gap: 8px;">
-                <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-bone); margin-top: 4px;"></span>
-                <span style="flex: 1;"><strong>Brightness</strong>: Correlates to how many references it has</span>
-            </div>
-        </div>
     </div>
 
     <!-- Floating Toggle Buttons -->
     <button id="header-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></span></button>
     <button id="stats-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16.5"></line><circle cx="12" cy="8" r="0.5" fill="currentColor"></circle></svg></span></button>
     <button id="controls-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></span></button>
-    <button id="legend-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><circle cx="4" cy="6" r="1.4" fill="currentColor" stroke="none"></circle><line x1="9" y1="6" x2="21" y2="6"></line><circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none"></circle><line x1="9" y1="12" x2="21" y2="12"></line><circle cx="4" cy="18" r="1.4" fill="currentColor" stroke="none"></circle><line x1="9" y1="18" x2="21" y2="18"></line></svg></span></button>
+    <button id="legend-toggle" class="panel glass toggle-btn"><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px; display:block;"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg></span></button>
 
     <!-- UI Panel: Glass Sidebar details -->
     <div id="detail-sidebar" class="panel glass">

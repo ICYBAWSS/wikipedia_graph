@@ -57,6 +57,7 @@ let nodeSizeScale = 1.0;      // multiplies radiusMinPixels/radiusMaxPixels
 let edgeOpacity = 1.0;        // multiplies the background hairline edge layer's alpha
 let dimAlpha = 22;            // alpha used for off-route / unconnected "dimmed" nodes
 let hideAllNodes = false;     // if true, cull() draws zero nodes (edges unaffected)
+let hiddenCategories = new Set(); // category ids toggled off via the legend's eye icon
 let titleOffsets = null, titleBytes = null, titleDecoder = null; // in-memory title index (titles.bin)
 function titleOf(idx) {
   if (!titleOffsets || idx < 0 || idx >= titleOffsets.length - 1) return null;
@@ -337,9 +338,38 @@ async function fetchLiveWikiSnippet(title) {
   return null;
 }
 
-// Init legend
-(function(){ const el=$('legend-list'); if(el) el.innerHTML=CAT.map((c,i)=>
-  `<div class="legend-item"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:rgb(${c.join(',')});margin-right:8px"></span>${CATNAME[i]}</div>`).join(''); })();
+// Init legend. Each row toggles that category's visibility on click -- the eye icon
+// swaps open/closed and cull() (see its hiddenCategories check) skips those nodes
+// (and their edges) on the next redraw. window.__wg isn't set up yet when this runs
+// at load, but the click handler only calls it later, once a user actually clicks.
+const EYE_OPEN = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:block;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+const EYE_CLOSED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;display:block;"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a20.3 20.3 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a20.3 20.3 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+(function(){ const el=$('legend-list'); if(!el) return;
+  el.innerHTML = CAT.map((c,i) =>
+    `<div class="legend-item" data-cat="${i}">
+       <span class="legend-left">
+         <span class="legend-color" style="background:rgb(${c.join(',')})"></span>
+         ${CATNAME[i]}
+       </span>
+       <span class="legend-eye">${EYE_OPEN}</span>
+     </div>`).join('');
+  el.querySelectorAll('.legend-item').forEach(item => {
+    item.onclick = () => {
+      const catId = Number(item.dataset.cat);
+      const eye = item.querySelector('.legend-eye');
+      if (hiddenCategories.has(catId)) {
+        hiddenCategories.delete(catId);
+        item.style.opacity = '';
+        eye.innerHTML = EYE_OPEN;
+      } else {
+        hiddenCategories.add(catId);
+        item.style.opacity = '0.45';
+        eye.innerHTML = EYE_CLOSED;
+      }
+      if (window.__wg) window.__wg.cull();
+    };
+  });
+})();
 
 // Setup panels collapsible toggles
 [['header-toggle','header-panel'],['legend-toggle','legend-panel'],['controls-toggle','controls-panel'],['stats-toggle','stats-panel']]
@@ -386,19 +416,34 @@ if(sbb) {
 // Load Coordinate Binaries and Connect SQLite VFS
 async function startVisualization() {
   if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
-  // Only the two files needed to draw the galaxy block the first render. The
-  // adjacency CSRs and title index are each up to ~360MB and only matter once the
-  // user searches or finds a route — both of those already degrade to a live DB
-  // fallback until these resolve (see fetchNeighbours/findTitleIndexInTitlesBin), so
-  // fetching all five in one Promise.all was adding minutes to the very first paint
-  // for no reason. They're kicked off below and wired in whenever they land.
-  const [nbuf, ebuf] = await Promise.all([
+  // Only the files needed to draw the galaxy AND resolve a title to a node index
+  // block the first render. titles.bin has to be in this set, not the background
+  // batch below: findTitleIndexInTitlesBin() has no live-DB fallback (only titleOf(),
+  // the reverse lookup, does), so searching or routing before it loads used to fail
+  // outright with "No link path found" instead of just being slow. The two adjacency
+  // CSRs are the only genuinely optional ones -- up to ~360MB each, and pathfinding
+  // already falls back to live DB queries (just slower) while they're missing -- so
+  // those are the ones fetched in the background and wired in whenever they land.
+  const [nbuf, ebuf, tbuf] = await Promise.all([
     fetchAsset('viewer_full.bin'),
-    fetchAsset('edgeTgt.bin')
+    fetchAsset('edgeTgt.bin'),
+    fetchAsset('titles.bin')
   ]);
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
   const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
+
+  {
+    const tN = new Uint32Array(tbuf, 0, 1)[0];
+    if (tN === N) {
+      titleOffsets = new Uint32Array(tbuf, 4, tN + 1);
+      titleBytes = new Uint8Array(tbuf, 4 + (tN + 1) * 4);
+      titleDecoder = new TextDecoder('utf-8');
+      console.log(`Title index loaded: ${tN.toLocaleString()} titles`);
+    } else {
+      console.warn(`titles.bin node count (${tN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to per-node DB query for titles`);
+    }
+  }
 
   Promise.all([
     // Full graph adjacency (CSR), OUT-edges — see build_adjacency_csr.py.
@@ -412,11 +457,8 @@ async function startVisualization() {
     // (the old approach) can't distinguish "I link to this" from "this links to
     // me," so a route could silently include a hop with no real clickable link.
     // Optional, same as the forward file: falls back to live DB queries if missing.
-    fetchAsset('adjacency_csr_rev.bin', true),
-    // Title lookup for instant node->title resolution — see build_titles_index.py.
-    // Optional: if this 404s, titles fall back to the "#idx" placeholder + DB query.
-    fetchAsset('titles.bin', true)
-  ]).then(([cbuf, cbufRev, tbuf]) => {
+    fetchAsset('adjacency_csr_rev.bin', true)
+  ]).then(([cbuf, cbufRev]) => {
     if (cbuf) {
       const header = new Uint32Array(cbuf, 0, 2);
       const csrFileN = header[0], csrE = header[1];
@@ -442,18 +484,6 @@ async function startVisualization() {
       }
     }
 
-    if (tbuf) {
-      const tN = new Uint32Array(tbuf, 0, 1)[0];
-      if (tN === N) {
-        titleOffsets = new Uint32Array(tbuf, 4, tN + 1);
-        titleBytes = new Uint8Array(tbuf, 4 + (tN + 1) * 4);
-        titleDecoder = new TextDecoder('utf-8');
-        console.log(`Title index loaded: ${tN.toLocaleString()} titles`);
-        buildTitleSearchIndex();
-      } else {
-        console.warn(`titles.bin node count (${tN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to per-node DB query for titles`);
-      }
-    }
   }).catch(e => console.error('Background asset load failed:', e));
   px=new Float32Array(N); py=new Float32Array(N); const rad=new Float32Array(N), col=new Uint8Array(N*4);
   const deg=new Float32Array(N), cat=new Uint8Array(N);
@@ -1454,7 +1484,14 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
   let lastSearchPaint = 0;
   let paceStepsUsed = 0;
   const PACE_STEPS_MAX = 150;
-  const PACE_DELAY_MS = 35;
+  // Raised from 35ms: this used to pace once per EDGE examined, so even a modest
+  // search meant hundreds of paced calls and 35ms each was already a long wait.
+  // Now that DFS batches onProgress once per POPPED NODE (see runSimpleDFS), a
+  // typical short search is only a handful of calls total -- at 35ms that's under
+  // half a second, over before it's perceptible as edges "growing" rather than a
+  // single flash. 90ms keeps the same PACE_STEPS_MAX-call ceiling (worst case
+  // still bounded, ~13s) while actually being visible for the common case.
+  const PACE_DELAY_MS = 90;
   // edges: array of [fromIdx, toIdx] pairs — every edge the algorithm actually
   // examined this step, not just the nodes it landed on. Both ends get marked
   // visited and pushed into searchFrontierEdges so cull()'s existing search-edges
@@ -1501,16 +1538,46 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
   const easeInOutQuad = t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
   const ROUTE_STEP_MS = 700; // wall-clock time per hop, must exceed the transition below
 
+  const ROUTE_ANIMATE_MAX_HOPS = 50; // DFS in particular can return paths in the hundreds/thousands of hops (no shortest-path preference) -- flying through those one at a time would take minutes
+
   function animateRoute(pathIndices) {
     if (routeAnimationInterval) clearInterval(routeAnimationInterval);
 
     // Remember the whole path before revealing it hop by hop, so an interrupted flight
     // can be completed rather than left half-drawn.
     currentRouteOrdered = Array.from(pathIndices);
-    currentRouteIndices = new Set();
-    cull(VS);
 
     const caption = $('route-caption'), captionStep = $('route-caption-step'), captionTitle = $('route-caption-title');
+
+    // Long routes: skip the node-by-node flight entirely and just show the whole
+    // route at once, camera framed to fit it.
+    if (pathIndices.length > ROUTE_ANIMATE_MAX_HOPS) {
+      currentRouteIndices = new Set(pathIndices);
+      if (caption) { caption.style.opacity = '0'; caption.style.transform = 'translateX(-50%) translateY(-8px)'; }
+
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const idx of pathIndices) {
+        const x = px[idx], y = py[idx];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      const [w, h] = dims();
+      const extent = Math.max(maxX - minX, maxY - minY, 50) * 1.3; // margin; floored so a tightly-clustered route doesn't zoom in absurdly far
+      VS = {
+        ...VS,
+        target: [(minX + maxX) / 2, (minY + maxY) / 2, 0],
+        zoom: Math.log2(Math.min(w, h) / extent),
+        transitionDuration: 700,
+        transitionInterpolator: new LinearInterpolator({ transitionProps: ['target', 'zoom'] }),
+        transitionEasing: easeInOutQuad
+      };
+      deckgl.setProps({ viewState: VS });
+      cull(VS);
+      return;
+    }
+
+    currentRouteIndices = new Set();
+    cull(VS);
 
     let step = 0;
     routeAnimationInterval = setInterval(() => {
@@ -1674,7 +1741,8 @@ async function executePathfinder(mode) {
         }
       })();
     } else {
-      alert("No link path found between these articles.");
+      const modeLabel = { bidirectional: 'Bidirectional BFS', bfs: 'BFS', dfs: 'DFS' }[mode] || mode;
+      alert(`No link path found between these articles using ${modeLabel}.`);
     }
   } catch (e) {
     if (e?.name === 'QueryEvicted') {
@@ -1715,68 +1783,102 @@ function cull(vs){
   const M=(cx1-cx0+1)*(cy1-cy0+1), perCap=Math.max(1,Math.ceil(nodeBudget/M));
   let v=0, ec=0;
 
+  // Shared by both the per-cell budget loop below and the "must-render" pass after
+  // it. Pulled out so a node's color/size logic lives in exactly one place, however
+  // it ends up getting drawn.
+  const colorAndPlace = (i) => {
+    sPos[v*2]=px[i]; sPos[v*2+1]=py[i]; sIdx[v]=i;
+
+    if (searchActive) {
+      // The search-in-progress signal is the edges layer (searchFrontierEdges,
+      // below) lighting up as they're examined, not the nodes -- every node here
+      // is either an orientation marker (start/end) or dimmed out of the way so
+      // the edge trail actually reads.
+      if (i === searchStartIdx) {
+        // Start node: bright lime green, enlarged
+        sRad[v] = rad[i] * 4.0;
+        sCol[v*4]=80; sCol[v*4+1]=255; sCol[v*4+2]=80; sCol[v*4+3]=255;
+      } else if (i === searchEndIdx) {
+        // End node: bright red, enlarged
+        sRad[v] = rad[i] * 4.0;
+        sCol[v*4]=255; sCol[v*4+1]=80; sCol[v*4+2]=80; sCol[v*4+3]=255;
+      } else {
+        // Everything else, visited or not: dimmed grey
+        sRad[v] = rad[i] * 0.5;
+        sCol[v*4]=70; sCol[v*4+1]=70; sCol[v*4+2]=70; sCol[v*4+3]=20;
+      }
+    // A route and a selected node are independent pieces of state and can both be
+    // live at once, so this is one flat priority chain rather than a route branch
+    // that swallows every other case. (It used to be the latter, which is why
+    // clicking a node had to wipe the route to be visible at all.)
+    } else if (i === selectedNodeIdx) {
+      // Clicked node size and color (hot pink/lilac). Ranked above the route so a
+      // node you click *on* the route still reads as the thing you just clicked.
+      sRad[v] = rad[i] * 3.0;
+      sCol[v*4]=245; sCol[v*4+1]=100; sCol[v*4+2]=150; sCol[v*4+3]=255;
+    } else if (currentRouteIndices.has(i)) {
+      // Path highlighted nodes size and color (yellow)
+      sRad[v] = rad[i] * 3.5;
+      sCol[v*4]=232; sCol[v*4+1]=184; sCol[v*4+2]=64; sCol[v*4+3]=255;
+    } else if (selectedNodeIdx !== -1 && selectedConnections.has(i)) {
+      // Connected neighbor! Bright and slightly enlarged
+      sRad[v] = rad[i] * 1.3;
+      sCol[v*4]=col[i*4]; sCol[v*4+1]=col[i*4+1]; sCol[v*4+2]=col[i*4+2]; sCol[v*4+3]=255;
+    } else if (currentRouteIndices.size > 0 || selectedNodeIdx !== -1) {
+      // Off-route / unconnected — dimmed much further than the old 70: barely-there
+      // presence so the route and selection read as the clear focus, while still
+      // keeping a faint trace of the rest of the galaxy (alpha 0 would be the
+      // "everything else disappeared" problem from before).
+      sRad[v] = rad[i] * 0.4;
+      sCol[v*4]=col[i*4];sCol[v*4+1]=col[i*4+1];sCol[v*4+2]=col[i*4+2];sCol[v*4+3]=dimAlpha;
+    } else {
+      sRad[v]=rad[i];
+      sCol[v*4]=col[i*4];sCol[v*4+1]=col[i*4+1];sCol[v*4+2]=col[i*4+2];sCol[v*4+3]=255;
+    }
+
+    const tx=et[i*2];
+    if(tx===tx){
+      eS[ec*2]=px[i];eS[ec*2+1]=py[i];
+      eT[ec*2]=tx;eT[ec*2+1]=et[i*2+1];
+      ec++;
+    } // NaN check
+    v++;
+  };
+
   for(let cy=cy0;cy<=cy1&&v<nodeBudget;cy++){ const base=cy*G;
     for(let cx=cx0;cx<=cx1&&v<nodeBudget;cx++){ const c=base+cx,s0=start[c],e0=start[c+1],take=Math.min(e0-s0,perCap);
       for(let k=0;k<take&&v<nodeBudget;k++){ const i=order[s0+k];
-        sPos[v*2]=px[i];sPos[v*2+1]=py[i]; sIdx[v]=i;
-        
-        if (searchActive) {
-          if (i === searchStartIdx) {
-            // Start node: bright lime green, enlarged
-            sRad[v] = rad[i] * 4.0;
-            sCol[v*4]=80; sCol[v*4+1]=255; sCol[v*4+2]=80; sCol[v*4+3]=255;
-          } else if (i === searchEndIdx) {
-            // End node: bright red, enlarged
-            sRad[v] = rad[i] * 4.0;
-            sCol[v*4]=255; sCol[v*4+1]=80; sCol[v*4+2]=80; sCol[v*4+3]=255;
-          } else if (searchVisitedNodes.has(i)) {
-            // Visited node: cyan glow
-            sRad[v] = rad[i] * 2.0;
-            sCol[v*4]=80; sCol[v*4+1]=200; sCol[v*4+2]=255; sCol[v*4+3]=220;
-          } else {
-            // Everything else: dimmed grey
-            sRad[v] = rad[i] * 0.5;
-            sCol[v*4]=70; sCol[v*4+1]=70; sCol[v*4+2]=70; sCol[v*4+3]=20;
-          }
-        // A route and a selected node are independent pieces of state and can both be
-        // live at once, so this is one flat priority chain rather than a route branch
-        // that swallows every other case. (It used to be the latter, which is why
-        // clicking a node had to wipe the route to be visible at all.)
-        } else if (i === selectedNodeIdx) {
-          // Clicked node size and color (hot pink/lilac). Ranked above the route so a
-          // node you click *on* the route still reads as the thing you just clicked.
-          sRad[v] = rad[i] * 3.0;
-          sCol[v*4]=245; sCol[v*4+1]=100; sCol[v*4+2]=150; sCol[v*4+3]=255;
-        } else if (currentRouteIndices.has(i)) {
-          // Path highlighted nodes size and color (yellow)
-          sRad[v] = rad[i] * 3.5;
-          sCol[v*4]=232; sCol[v*4+1]=184; sCol[v*4+2]=64; sCol[v*4+3]=255;
-        } else if (selectedNodeIdx !== -1 && selectedConnections.has(i)) {
-          // Connected neighbor! Bright and slightly enlarged
-          sRad[v] = rad[i] * 1.3;
-          sCol[v*4]=col[i*4]; sCol[v*4+1]=col[i*4+1]; sCol[v*4+2]=col[i*4+2]; sCol[v*4+3]=255;
-        } else if (currentRouteIndices.size > 0 || selectedNodeIdx !== -1) {
-          // Off-route / unconnected — dimmed much further than the old 70: barely-there
-          // presence so the route and selection read as the clear focus, while still
-          // keeping a faint trace of the rest of the galaxy (alpha 0 would be the
-          // "everything else disappeared" problem from before).
-          sRad[v] = rad[i] * 0.4;
-          sCol[v*4]=col[i*4];sCol[v*4+1]=col[i*4+1];sCol[v*4+2]=col[i*4+2];sCol[v*4+3]=dimAlpha;
-        } else {
-          sRad[v]=rad[i];
-          sCol[v*4]=col[i*4];sCol[v*4+1]=col[i*4+1];sCol[v*4+2]=col[i*4+2];sCol[v*4+3]=255;
-        }
+        if (hiddenCategories.size > 0 && hiddenCategories.has(cat[i])) continue; // legend eye-toggle
+        colorAndPlace(i);
+      }
+    }
+  }
 
-        const tx=et[i*2]; 
-        if(tx===tx){ 
-          eS[ec*2]=px[i];eS[ec*2+1]=py[i]; 
-          eT[ec*2]=tx;eT[ec*2+1]=et[i*2+1]; 
-          ec++; 
-        } // NaN check
-        v++; 
-      } 
-    } 
-  } 
+  // The per-cell budget above picks nodes by raw index order within each cell --
+  // arbitrary with respect to importance, not sorted by degree or anything else.
+  // An obscure low-degree node (exactly the kind a search or route is likely to
+  // pass through) can lose that lottery entirely and never get drawn, which meant
+  // its start/end/selected/route-node color logic above never ran either, no
+  // matter how bright the color was supposed to be. These are orientation anchors,
+  // not decoration, so guarantee them a slot regardless of what the grid pass did.
+  const mustInclude = [];
+  if (searchActive) {
+    if (searchStartIdx !== -1) mustInclude.push(searchStartIdx);
+    if (searchEndIdx !== -1) mustInclude.push(searchEndIdx);
+  }
+  if (selectedNodeIdx !== -1) mustInclude.push(selectedNodeIdx);
+  if (currentRouteIndices.size > 0) for (const idx of currentRouteIndices) mustInclude.push(idx);
+
+  if (mustInclude.length > 0 && v < BUDGET) {
+    const included = new Set();
+    for (let q = 0; q < v; q++) included.add(sIdx[q]);
+    for (const idx of mustInclude) {
+      if (v >= BUDGET) break;
+      if (included.has(idx)) continue;
+      included.add(idx);
+      colorAndPlace(idx);
+    }
+  }
 
   // Render path lines, one color per hop keyed to the destination node's category —
   // same rule as the selected-node fan-out below, so the whole app colors edges
@@ -1861,8 +1963,11 @@ function cull(vs){
         getSourcePosition: { value: sePos, size: 2, stride: 4, offset: 0 },
         getTargetPosition: { value: sePos, size: 2, stride: 4, offset: 2 }
       }},
-      getColor: [60, 160, 255, 60],
-      getWidth: 1.2,
+      // Bright + fully opaque: this line IS the "every edge looked at" trail, so it
+      // needs to read clearly against the (deliberately near-invisible, see the
+      // background 'links' layer below) rest of the graph while a search is active.
+      getColor: [80, 200, 255, 220],
+      getWidth: 1.8,
       widthUnits: 'pixels'
     });
   }
@@ -1946,7 +2051,16 @@ function cull(vs){
     }
   } // close cull
 
-  (function fit(){ const [w,h]=dims(); if(w>10){ VS={target:[0,0,0],zoom:Math.log2(Math.min(w,h)/2400)}; deckgl.setProps({viewState:VS}); cull(VS);
+  // Fit-to-bounds, not a guessed constant: minx is -bound and the grid is square
+  // and centered on the origin (see startVisualization's `bound=Math.max(maxAbsX,
+  // maxAbsY)*1.02`), so -minx*2 is the true diameter of the actual laid-out graph.
+  // Dividing by min(w,h) already makes this device/viewport-size aware; deriving
+  // the diameter from the real data means the start zoom is always "every node
+  // just fits," not a fixed number tuned for one screen size and wrong on others.
+  (function fit(){ const [w,h]=dims(); if(w>10){
+      const diameter = -minx * 2;
+      const margin = 1.08; // small breathing room so the outermost nodes aren't flush against the edge
+      VS={target:[0,0,0],zoom:Math.log2(Math.min(w,h)/(diameter*margin))}; deckgl.setProps({viewState:VS}); cull(VS);
       const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
     } else requestAnimationFrame(fit); })();
 
@@ -1972,9 +2086,9 @@ function cull(vs){
     dbQuery,
     pathfinders: {
       astar: (a, b) => runAStarPathfinder(a, b),
-      bfs: (a, b) => runBidirectionalBFS(a, b),
-      simpleBfs: (a, b) => runSimpleBFS(a, b),
-      simpleDfs: (a, b) => runSimpleDFS(a, b)
+      bfs: (a, b, opts) => runBidirectionalBFS(a, b, opts),
+      simpleBfs: (a, b, opts) => runSimpleBFS(a, b, opts),
+      simpleDfs: (a, b, opts) => runSimpleDFS(a, b, opts)
     },
     stats: () => JSON.parse(JSON.stringify(qStats)),
     resetStats() {
@@ -2145,7 +2259,10 @@ function orderByDegreeDesc(indices, degrees) {
 
 async function runBidirectionalBFS(startId, endId, opts = {}) {
   if (!db) return null;
-  const maxDepth = opts.maxDepth ?? 6;
+  // No artificial depth cap: a search should only ever report "no path" because the
+  // graph genuinely has none (both frontiers exhausted, see the break below), not
+  // because an arbitrary round limit was hit while reachable graph still remained.
+  const maxDepth = opts.maxDepth ?? Infinity;
   const frontierCap = opts.frontierCap ?? 220; // nodes expanded per level (1 query)
   const onProgress = opts.onProgress;
 
@@ -2256,7 +2373,10 @@ async function buildPathFromIndices(startPreds, endPreds, intersect) {
 // what gets visited or in what order.
 async function runSimpleBFS(startId, endId, opts = {}) {
   if (!db) return null;
-  const maxDepth = opts.maxDepth ?? 10; // one-directional, so allow more levels than the bidirectional search's 6
+  // No artificial depth cap — see runBidirectionalBFS. The loop below already exits
+  // on its own once frontier.length hits 0 (the whole reachable component's been
+  // walked), which is the only condition that should ever mean "no path".
+  const maxDepth = opts.maxDepth ?? Infinity;
   const onProgress = opts.onProgress;
 
   try {
@@ -2309,14 +2429,15 @@ async function runSimpleBFS(startId, endId, opts = {}) {
 // push whatever's new, repeat. No heuristic, no reordering of neighbors. Same
 // direction guarantee as every other pathfinder here: 'out' edges only.
 //
-// DFS has no natural bound on a graph this size and no shortest-path guarantee —
-// maxVisited is purely a safety ceiling against a pathological run, not a
-// correctness parameter. opts.onProgress works exactly as in runSimpleBFS,
-// except it fires once per node (DFS's natural granularity) rather than once
-// per level.
+// DFS has no shortest-path guarantee, but it should still be exhaustive: no
+// artificial visited cap, so "no path found" only ever means the whole forward-
+// reachable component from startId was walked (stack ran empty) without hitting
+// endId, not that a search budget ran out with graph still left unexplored.
+// opts.onProgress works exactly as in runSimpleBFS, except it fires once per popped
+// node (DFS's natural granularity) rather than once per level.
 async function runSimpleDFS(startId, endId, opts = {}) {
   if (!db) return null;
-  const maxVisited = opts.maxVisited ?? 20000;
+  const maxVisited = opts.maxVisited ?? Infinity;
   const onProgress = opts.onProgress;
 
   try {
