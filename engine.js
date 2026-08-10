@@ -92,7 +92,9 @@ function inflateEdgeV2(buf, lo, scale) {
   new Uint32Array(out, 0, 1)[0] = n;
   const et = new Float32Array(out, 4, n * 2);
   for (let i = 0; i < n; i++) {
-    if ((mask[i >> 3] >> (i & 7)) & 1) { et[i * 2] = txq[i] / scale + lo; et[i * 2 + 1] = tyq[i] / scale + lo; }
+    // np.packbits defaults to MSB-first (element 0 -> bit 0x80, not 0x01) --
+    // this has to read bits back in the same order it wrote them in.
+    if ((mask[i >> 3] >> (7 - (i & 7))) & 1) { et[i * 2] = txq[i] / scale + lo; et[i * 2 + 1] = tyq[i] / scale + lo; }
     else { et[i * 2] = NaN; et[i * 2 + 1] = NaN; }
   }
   return out;

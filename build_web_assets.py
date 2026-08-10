@@ -136,6 +136,10 @@ def build_edge(path: Path, n, lo, scale):
     # every future N) -- pad it to even so txq/tyq start at a uint16-aligned
     # offset. JS recomputes this identical padding from n alone, no header field
     # needed for it.
+    # np.packbits defaults to bitorder='big': element 0 of `has` lands in the
+    # MSB (0x80) of byte 0, not the LSB. The JS reader has to unpack in that
+    # same order -- a mismatch here doesn't error, it just quietly reads a
+    # different node's bit than intended (see inflateEdgeV2 in engine.js).
     mask = np.packbits(has).tobytes()
     if len(mask) % 2:
         mask += b"\0"
