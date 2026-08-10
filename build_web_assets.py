@@ -165,6 +165,24 @@ def build_titles(path: Path, n):
     return header + lengths.astype(np.uint8).tobytes() + text
 
 
+def build_csr_gz(path: Path) -> None:
+    """Plain gzip of a CSR file, byte-for-byte identical layout inside -- no
+    quantization here (the values are already-minimal uint32 node indices, not
+    floats with headroom to cut), just compression. Node indices don't run/repeat
+    the way coordinates or degrees do, so the ratio is a modest ~1.4x rather than
+    the 3x+ the other v2 assets get -- still worth it at this size. Level 6, not
+    9: these files are ~360MB each and 9 buys negligible extra ratio for a lot
+    more CPU time.
+    """
+    t0 = time.time()
+    raw = path.read_bytes()
+    blob = gzip.compress(raw, 6)
+    out = path.with_suffix(path.suffix + ".gz")
+    out.write_bytes(blob)
+    print(f"  -> {out.name}: {len(raw) / 1e6:.1f} MB -> {len(blob) / 1e6:.1f} MB gz "
+          f"({len(raw) / len(blob):.2f}x, {time.time() - t0:.0f}s)")
+
+
 def main():
     viewer_path = ROOT / "viewer_full.bin"
     edge_path = ROOT / "edgeTgt.bin"
@@ -198,6 +216,14 @@ def main():
     print("building titles_v2 ...")
     _write_gz(ROOT / "titles_v2.bin.gz", build_titles(titles_path, n),
               titles_path.stat().st_size)
+
+    for csr_name in ("adjacency_csr.bin", "adjacency_csr_rev.bin"):
+        csr_path = ROOT / csr_name
+        if csr_path.exists():
+            print(f"gzipping {csr_name} ...")
+            build_csr_gz(csr_path)
+        else:
+            print(f"skipping {csr_name} (not present)")
 
     print("\ndone.")
 

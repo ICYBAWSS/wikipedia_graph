@@ -210,6 +210,50 @@
             border-color: var(--color-ash);
         }
 
+        /* <select id="route-algo"> reuses .search-input for background/border/font so it
+           reads as part of the same input group, not a raw browser control -- just needs
+           appearance:none + a hand-drawn arrow since selects ignore most input styling. */
+        select.search-input {
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239d9894' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 14px;
+            padding-right: 26px;
+        }
+        select.search-input option {
+            background: var(--surface-carbon);
+            color: var(--color-bone);
+        }
+
+        /* Small square icon buttons (random-pick dice) that sit inside or beside a
+           search-input -- same visual language as .toggle-btn, just smaller and square
+           instead of the floating circular panel toggles. */
+        .icon-btn {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            color: var(--color-ash);
+            border: none;
+            border-radius: var(--radius-icons);
+            cursor: pointer;
+            padding: 0;
+            transition: color 0.15s ease, background-color 0.15s ease;
+        }
+        .icon-btn:hover {
+            color: var(--color-bone);
+            background: rgba(255,255,255,0.08);
+        }
+        .icon-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+            pointer-events: none;
+        }
+
         .search-icon {
             position: absolute;
             left: 14px;
@@ -1141,20 +1185,22 @@
 
     <!-- UI Panel: Title and Search -->
     <div id="header-panel" class="panel glass collapsed">
-        <div class="eyebrow">Wikipedia Knowledge Web</div>
-        <h1>
-            <svg style="width:20px; height:20px; fill:currentColor; margin-top:2px" viewBox="0 0 24 24">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/>
-            </svg>
-            Wiki Graph visualizer
-        </h1>
-        <div class="subtitle">An overwhelming web of popular Wikipedia articles</div>
         <div class="search-container" style="position: relative;">
             <svg class="search-icon" viewBox="0 0 24 24">
                 <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
             </svg>
-            <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web..." list="article-list">
-            <div class="mini-loader" id="search-loader" style="position: absolute; right: 12px; top: 14px; border-color: rgba(255,255,255,0.1); border-top-color: var(--color-bone); display: none; width: 14px; height: 14px; border-width: 2px;"></div>
+            <input type="text" class="search-input" id="search-box" placeholder="Search knowledge web..." list="article-list" style="padding-right: 38px;">
+            <div class="mini-loader" id="search-loader" style="position: absolute; right: 40px; top: 14px; border-color: rgba(255,255,255,0.1); border-top-color: var(--color-bone); display: none; width: 14px; height: 14px; border-width: 2px;"></div>
+            <button id="search-random-btn" class="icon-btn" title="Random article" style="position: absolute; right: 8px; top: 8px;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px;">
+                    <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                    <circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"></circle>
+                    <circle cx="16" cy="8" r="1.3" fill="currentColor" stroke="none"></circle>
+                    <circle cx="8" cy="16" r="1.3" fill="currentColor" stroke="none"></circle>
+                    <circle cx="16" cy="16" r="1.3" fill="currentColor" stroke="none"></circle>
+                    <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"></circle>
+                </svg>
+            </button>
         </div>
 
         <!-- Route Finder Section -->
@@ -1169,19 +1215,30 @@
                     <input type="text" class="search-input" id="route-end" placeholder="End Article" style="padding: 8px 12px; font-size: 12px; width: 100%;" list="article-list">
                     <div class="mini-loader" id="route-end-loader" style="position: absolute; right: 10px; top: 10px; border-color: rgba(255,255,255,0.1); border-top-color: var(--color-bone); display: none; width: 12px; height: 12px; border-width: 1.5px;"></div>
                 </div>
+                <button id="route-random-btn" class="icon-btn" title="Random start/end" style="flex-shrink: 0; position: static; width: 32px; height: 32px;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px; height:16px;">
+                        <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                        <circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="8" r="1.3" fill="currentColor" stroke="none"></circle>
+                        <circle cx="8" cy="16" r="1.3" fill="currentColor" stroke="none"></circle>
+                        <circle cx="16" cy="16" r="1.3" fill="currentColor" stroke="none"></circle>
+                        <circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"></circle>
+                    </svg>
+                </button>
             </div>
             <div style="display: flex; gap: 6px;">
-                <button id="find-route-btn" class="wiki-link-btn" style="flex: 1; margin-top: 0; padding: 8px 4px; font-size: 10.5px; background: var(--color-bone); color: var(--surface-void); border: none; display: flex; align-items: center; justify-content: center; gap: 5px;">
-                    <span>Bidirectional BFS</span>
+                <select id="route-algo" class="search-input" style="padding: 8px 10px; font-size: 12px; width: auto; flex: 1; cursor: pointer;">
+                    <option value="bidirectional" selected>Bidirectional BFS</option>
+                    <option value="bfs">BFS</option>
+                    <option value="dfs">DFS</option>
+                    <option value="astar">A*</option>
+                    <option value="greedy">Greedy Best-First</option>
+                    <option value="dijkstra">Dijkstra (avoid hubs)</option>
+                    <option value="randomwalk">Random Walk</option>
+                </select>
+                <button id="find-route-btn" class="wiki-link-btn" style="flex: 0 0 auto; width: auto; padding: 8px 16px; margin-top: 0; font-size: 11px; background: var(--color-bone); color: var(--surface-void); border: none; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                    <span>Find Route</span>
                     <div class="mini-loader" id="route-loader" style="width: 10px; height: 10px; border-width: 1.5px;"></div>
-                </button>
-                <button id="find-bfs-route-btn" class="wiki-link-btn" style="flex: 1; margin-top: 0; padding: 8px 4px; font-size: 10.5px; background: var(--color-graphite); color: var(--color-bone); border: 1px solid var(--color-ash); display: flex; align-items: center; justify-content: center; gap: 5px;">
-                    <span>BFS</span>
-                    <div class="mini-loader" id="route-bfs-loader" style="width: 10px; height: 10px; border-width: 1.5px;"></div>
-                </button>
-                <button id="find-dfs-route-btn" class="wiki-link-btn" style="flex: 1; margin-top: 0; padding: 8px 4px; font-size: 10.5px; background: var(--color-graphite); color: var(--color-bone); border: 1px solid var(--color-ash); display: flex; align-items: center; justify-content: center; gap: 5px;">
-                    <span>DFS</span>
-                    <div class="mini-loader" id="route-dfs-loader" style="width: 10px; height: 10px; border-width: 1.5px;"></div>
                 </button>
             </div>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
@@ -1344,6 +1401,12 @@
         <div id="route-caption-step" style="font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-ash); margin-bottom: 2px;"></div>
         <div id="route-caption-title" style="font-size: 15px; font-weight: 600;"></div>
     </div>
+
+    <!-- Route Timing Toast: how long the algorithm actually took, minus the artificial
+         animation-pacing delay -- see pacedDelayMs in engine.js. Bottom-center (not
+         top-center like route-caption) so a short route's hop-flight caption, which
+         starts immediately, doesn't overlap it. -->
+    <div id="route-timing-toast" style="position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(8px); background: var(--surface-carbon); border: 1px solid var(--color-graphite); border-radius: var(--radius-cardssmall); padding: 8px 16px; font-family: var(--font-geist); font-size: 11.5px; color: var(--color-bone); pointer-events: none; z-index: 15; opacity: 0; transition: opacity 0.25s ease-in-out, transform 0.25s ease-in-out; box-shadow: var(--shadow-subtle); text-align: center; white-space: nowrap;"></div>
 
     <!-- Visualizer Script -->
     <script>

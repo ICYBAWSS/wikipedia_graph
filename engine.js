@@ -96,6 +96,32 @@ async function fetchGzipSameOrigin(name) {
   } catch (e) { return null; }
 }
 
+// Same idea, but for the two adjacency CSR files, which stay on HF -- at
+// ~250MB gzipped each they're too large for the same-origin git-hosted
+// approach the other three assets use (see build_csr_gz in
+// build_web_assets.py: plain gzip, ~1.4x, no quantization possible on
+// already-minimal uint32 node indices). No progress tracking here -- these
+// load in the background well after the loading screen (and its progress bar)
+// is already gone.
+async function fetchGzipHF(name) {
+  try {
+    if (typeof DecompressionStream === 'undefined') return null;
+    const r = await fetch(`${HF_ASSET_BASE}/${name}.gz`);
+    if (!r.ok || !r.body) return null;
+    const stream = r.body.pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).arrayBuffer();
+  } catch (e) { return null; }
+}
+
+// One CSR file: gzip'd from HF, falling back to the original uncompressed file
+// (fetchAsset's existing local-then-HF behavior) if the gzip fetch fails or
+// DecompressionStream is unavailable.
+async function fetchCsr(name) {
+  const gz = await fetchGzipHF(name);
+  if (gz) return gz;
+  return fetchAsset(name, true);
+}
+
 function inflateViewerV2(buf) {
   if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== 'WGV2') throw new Error('bad viewer_v2 magic');
   const head = new DataView(buf, 4, 20);
@@ -227,6 +253,24 @@ let titleOffsets = null, titleBytes = null, titleDecoder = null; // in-memory ti
 function titleOf(idx) {
   if (!titleOffsets || idx < 0 || idx >= titleOffsets.length - 1) return null;
   return titleDecoder.decode(titleBytes.subarray(titleOffsets[idx], titleOffsets[idx + 1]));
+}
+
+// Uniformly random article title, for the search box's and route finder's dice
+// buttons. Uniform means most picks are low-degree stubs (that's most of the
+// 6.9M articles) rather than recognizable pages -- an explicit choice over
+// biasing toward high-degree nodes, since a "random" button that only ever
+// lands on well-known articles isn't actually random.
+function randomTitle() {
+  if (!titleOffsets) return null;
+  const n = titleOffsets.length - 1;
+  return titleOf(Math.floor(Math.random() * n));
+}
+
+// ms -> "42ms" under a second, "3.2s" at or above it -- used by the route-finder
+// timing toast so both a near-instant CSR-backed search and a multi-second
+// exhaustive one read naturally.
+function formatDuration(ms) {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function findTitleIndexInTitlesBin(title) {
@@ -609,20 +653,18 @@ async function startVisualization() {
     }
   }
 
-  Promise.all([
-    // Full graph adjacency (CSR), OUT-edges — see build_adjacency_csr.py.
-    // Optional: if this 404s or is stale, pathfinding just falls back to the live DB.
-    fetchAsset('adjacency_csr.bin', true),
-    // Same graph, IN-edges. Route pathfinding needs BOTH, directionally: the forward
-    // half of a bidirectional search must only ever follow real out-links (so the
-    // reconstructed route is something you could actually click through), and the
-    // backward half — growing "who can reach the target" from the target side —
-    // needs in-links to do that correctly. A single merged/undirected structure
-    // (the old approach) can't distinguish "I link to this" from "this links to
-    // me," so a route could silently include a hop with no real clickable link.
-    // Optional, same as the forward file: falls back to live DB queries if missing.
-    fetchAsset('adjacency_csr_rev.bin', true)
-  ]).then(([cbuf, cbufRev]) => {
+  // Sequential, not Promise.all: adjacency_csr.bin (OUT-edges) is what the
+  // "instant connections" sidebar and every forward-direction pathfinder need;
+  // adjacency_csr_rev.bin (IN-edges) is only used by bidirectional search's
+  // backward half. Fetching both at once used to split bandwidth between them,
+  // so neither was ready as soon as it could have been -- with first paint now
+  // much faster than it used to be, users reach for a node's connections while
+  // this is still in flight far more often than before, and every extra second
+  // here is a second spent falling back to slow per-node DB queries instead.
+  // Loading the one that matters for most interactions first gets it wired in
+  // roughly twice as fast as splitting bandwidth ever did.
+  (async () => {
+    const cbuf = await fetchCsr('adjacency_csr.bin');
     if (cbuf) {
       const header = new Uint32Array(cbuf, 0, 2);
       const csrFileN = header[0], csrE = header[1];
@@ -636,6 +678,15 @@ async function startVisualization() {
       }
     }
 
+    // Route pathfinding needs BOTH directions eventually: the forward half of a
+    // bidirectional search must only ever follow real out-links (so the
+    // reconstructed route is something you could actually click through), and
+    // the backward half -- growing "who can reach the target" from the target
+    // side -- needs in-links to do that correctly. A single merged/undirected
+    // structure (the old approach) can't distinguish "I link to this" from
+    // "this links to me," so a route could silently include a hop with no real
+    // clickable link. It just doesn't need to block on this one first.
+    const cbufRev = await fetchCsr('adjacency_csr_rev.bin');
     if (cbufRev) {
       const header = new Uint32Array(cbufRev, 0, 2);
       const csrFileN = header[0], csrE = header[1];
@@ -647,8 +698,7 @@ async function startVisualization() {
         console.warn(`adjacency_csr_rev.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for reverse pathfinding`);
       }
     }
-
-  }).catch(e => console.error('Background asset load failed:', e));
+  })().catch(e => console.error('Background asset load failed:', e));
   px=new Float32Array(N); py=new Float32Array(N); const rad=new Float32Array(N), col=new Uint8Array(N*4);
   const deg=new Float32Array(N), cat=new Uint8Array(N);
   nodeDegrees = deg; // module-level pathfinders rank frontiers hub-first off this
@@ -879,6 +929,16 @@ function setupSearch(N, px, py) {
         console.error("Search selection failed:", e);
       }
     };
+
+    const searchRandomBtn = $('search-random-btn');
+    if (searchRandomBtn) {
+      searchRandomBtn.onclick = () => {
+        if (!titleOffsets) return; // titles.bin hasn't loaded yet
+        const idx = Math.floor(Math.random() * (titleOffsets.length - 1));
+        searchBox.value = titleOf(idx) || '';
+        window.selectNode(idx);
+      };
+    }
   }
 
   // Setup route search autocomplete sharing the same datalist
@@ -1486,116 +1546,6 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
     }
   } // close showNodeDetails
 
-  // ---------- A* Pathfinding ----------
-
-
-  class MinHeap {
-    constructor() { this.heap = []; }
-    push(node) {
-      this.heap.push(node);
-      this._siftUp(this.heap.length - 1);
-    }
-    pop() {
-      if (this.heap.length === 0) return null;
-      const top = this.heap[0];
-      const end = this.heap.pop();
-      if (this.heap.length > 0) {
-        this.heap[0] = end;
-        this._siftDown(0);
-      }
-      return top;
-    }
-    _siftUp(idx) {
-      let parent;
-      while (idx > 0 && (parent = ((idx - 1) >> 1), this.heap[idx].f < this.heap[parent].f)) {
-        [this.heap[idx], this.heap[parent]] = [this.heap[parent], this.heap[idx]];
-        idx = parent;
-      }
-    }
-    _siftDown(idx) {
-      const length = this.heap.length;
-      while (true) {
-        let left = idx * 2 + 1;
-        let right = left + 1;
-        let smallest = idx;
-        if (left < length && this.heap[left].f < this.heap[smallest].f) smallest = left;
-        if (right < length && this.heap[right].f < this.heap[smallest].f) smallest = right;
-        if (smallest === idx) break;
-        [this.heap[idx], this.heap[smallest]] = [this.heap[smallest], this.heap[idx]];
-        idx = smallest;
-      }
-    }
-    size() { return this.heap.length; }
-  }
-
-  async function runAStarPathfinder(startId, endId) {
-    const startIdx = findTitleIndexInTitlesBin(startId);
-    const endIdx = findTitleIndexInTitlesBin(endId);
-    if (startIdx === -1 || endIdx === -1) return null;
-    if (startIdx === endIdx) return [startId];
-
-    searchVisitedNodes.clear();
-    searchFrontierEdges = [];
-    searchStartIdx = startIdx;
-    searchEndIdx = endIdx;
-    searchActive = true;
-
-    const openSet = new MinHeap();
-    const gScore = new Map();
-    const fScore = new Map();
-    const cameFrom = new Map();
-    const heuristic = (a, b) => {
-      const dx = px[a] - px[b];
-      const dy = py[a] - py[b];
-      return Math.hypot(dx, dy);
-    };
-    gScore.set(startIdx, 0);
-    fScore.set(startIdx, heuristic(startIdx, endIdx));
-    openSet.push({ idx: startIdx, f: fScore.get(startIdx) });
-
-    while (openSet.size() > 0) {
-      const current = openSet.pop();
-      const curIdx = current.idx;
-      // Visualization: mark visited node
-      searchVisitedNodes.add(curIdx);
-      renderSearchVisualization();
-
-      if (curIdx === endIdx) {
-        // Reconstruct path
-        const path = [];
-        let cur = curIdx;
-        while (cur !== undefined && cur !== null) {
-          const title = titleOf(cur);
-          if (title) {
-            path.unshift(title);
-          }
-          cur = cameFrom.get(cur);
-        }
-        return path;
-      }
-
-      // Get neighbors using fetchNeighbours (CSR + VFS database with context-checking).
-      // Single-direction, walking forward from the start -- must be 'out' so the
-      // reconstructed path only ever uses real, clickable out-links (same reasoning
-      // as the other single-direction pathfinders, runSimpleBFS/runSimpleDFS).
-      const adjacency = await fetchNeighbours([curIdx], PRIORITY_CLICK, 'out');
-      const neighborList = adjacency.get(curIdx) || [];
-      for (const neighborIdx of neighborList) {
-        const tentativeG = gScore.get(curIdx) + 1;
-        if (tentativeG < (gScore.get(neighborIdx) ?? Infinity)) {
-          cameFrom.set(neighborIdx, curIdx);
-          gScore.set(neighborIdx, tentativeG);
-          const f = tentativeG + heuristic(neighborIdx, endIdx);
-          fScore.set(neighborIdx, f);
-          openSet.push({ idx: neighborIdx, f });
-          // Visualization: record traversal edge
-          searchFrontierEdges.push(curIdx, neighborIdx);
-        }
-      }
-    }
-    return null;
-  }
-
   // Is this position currently inside the visible viewport (no margin — this is
   // "would a human see it right now", not cull()'s prefetch-oversized bounds)?
   function isPointInView(x, y, vs) {
@@ -1647,6 +1597,11 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
   // interesting part of the animation is already over.
   let lastSearchPaint = 0;
   let paceStepsUsed = 0;
+  // Total artificial delay actually applied so far this search -- executePathfinder
+  // resets this before dispatch and subtracts it from the wall-clock time it reports,
+  // so the timing toast shows how long the algorithm took, not how long the
+  // watchable-animation pacing took.
+  let pacedDelayMs = 0;
   const PACE_STEPS_MAX = 150;
   // Raised from 35ms: this used to pace once per EDGE examined, so even a modest
   // search meant hundreds of paced calls and 35ms each was already a long wait.
@@ -1677,6 +1632,7 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
       cull(VS);
     }
     if (paceStepsUsed++ < PACE_STEPS_MAX) {
+      pacedDelayMs += PACE_DELAY_MS;
       await new Promise(r => setTimeout(r, PACE_DELAY_MS));
     }
   }
@@ -1689,13 +1645,10 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
 
   // Setup Route Finder execution
   const findRouteBtn = $('find-route-btn');
-  const findBfsRouteBtn = $('find-bfs-route-btn');
-  const findDfsRouteBtn = $('find-dfs-route-btn');
+  const routeAlgoSelect = $('route-algo');
   const routeStart = $('route-start');
   const routeEnd = $('route-end');
   const routeLoader = $('route-loader');
-  const routeBfsLoader = $('route-bfs-loader');
-  const routeDfsLoader = $('route-dfs-loader');
   const routeResult = $('route-result-container');
   const routeTextPath = $('route-text-path');
 
@@ -1785,10 +1738,37 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
     }, ROUTE_STEP_MS);
   }
 
+// mode -> {label, run}. label feeds both the failure alert and the timing toast;
+// run(startVal, endVal, opts) is one of the module-level pathfinders, all sharing
+// the same {onEndpoints, onProgress} contract.
+const PATHFINDER_ALGOS = {
+  bidirectional: { label: 'Bidirectional BFS', run: runBidirectionalBFS },
+  bfs: { label: 'BFS', run: runSimpleBFS },
+  dfs: { label: 'DFS', run: runSimpleDFS },
+  astar: { label: 'A*', run: runAStarPathfinder },
+  greedy: { label: 'Greedy Best-First', run: runGreedyBestFirst },
+  dijkstra: { label: 'Dijkstra', run: runDijkstraWeighted },
+  randomwalk: { label: 'Random Walk', run: runRandomWalk }
+};
+
+function showRouteTiming(text) {
+  const toast = $('route-timing-toast');
+  if (!toast) return;
+  toast.textContent = text;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateX(-50%) translateY(0)';
+  clearTimeout(showRouteTiming._t);
+  showRouteTiming._t = setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(8px)';
+  }, 4000);
+}
+
 async function executePathfinder(mode) {
   const startVal = routeStart.value.trim();
   const endVal = routeEnd.value.trim();
   if (!startVal || !endVal || !db) return;
+  const algo = PATHFINDER_ALGOS[mode] || PATHFINDER_ALGOS.bidirectional;
 
   // Clear any running pathfinding animation or highlights and visualization state
   clearRoute();
@@ -1796,20 +1776,18 @@ async function executePathfinder(mode) {
   searchVisitedNodes.clear();
   searchFrontierEdges = [];
   paceStepsUsed = 0; // fresh animation budget for this search
+  pacedDelayMs = 0;  // fresh timing budget too -- see its declaration
   lastZoomOutAt = 0;
 
   findRouteBtn.disabled = true;
-  if (findBfsRouteBtn) findBfsRouteBtn.disabled = true;
-  if (findDfsRouteBtn) findDfsRouteBtn.disabled = true;
+  if (routeLoader) routeLoader.style.display = 'block';
 
-  if (mode === 'bidirectional' && routeLoader) routeLoader.style.display = 'block';
-  if (mode === 'bfs' && routeBfsLoader) routeBfsLoader.style.display = 'block';
-  if (mode === 'dfs' && routeDfsLoader) routeDfsLoader.style.display = 'block';
-
+  const t0 = performance.now();
   try {
     // Bidirectional BFS: meets in the middle from both ends, unweighted-graph
     // optimal in hop count. Simple BFS/DFS: textbook single-direction traversals,
-    // no shortest-path guarantee for DFS — see runSimpleBFS/runSimpleDFS.
+    // no shortest-path guarantee for DFS — see runSimpleBFS/runSimpleDFS. A*/greedy/
+    // Dijkstra: heap-guided, see runHeapPathfinder. Random walk: see runRandomWalk.
     const onEndpoints = (s, e) => {
       searchStartIdx = s; searchEndIdx = e;
       // Fly to the start node so the search animation is actually legible — without
@@ -1826,14 +1804,10 @@ async function executePathfinder(mode) {
       };
       deckgl.setProps({ viewState: VS });
     };
-    let path;
-    if (mode === 'bidirectional') {
-      path = await runBidirectionalBFS(startVal, endVal, { onEndpoints, onProgress: markSearchProgress });
-    } else if (mode === 'bfs') {
-      path = await runSimpleBFS(startVal, endVal, { onEndpoints, onProgress: markSearchProgress });
-    } else {
-      path = await runSimpleDFS(startVal, endVal, { onEndpoints, onProgress: markSearchProgress });
-    }
+    const path = await algo.run(startVal, endVal, { onEndpoints, onProgress: markSearchProgress });
+    // Wall clock minus the artificial animation-pacing delay -- see pacedDelayMs --
+    // is the actual algorithm time, which is what the timing toast reports.
+    const elapsedMs = Math.max(0, performance.now() - t0 - pacedDelayMs);
 
     if (path && path.length > 0) {
       console.log("Path discovered:", path);
@@ -1904,9 +1878,17 @@ async function executePathfinder(mode) {
           }
         }
       })();
+
+      showRouteTiming(`${algo.label} · found in ${formatDuration(elapsedMs)} · ${path.length} hop${path.length === 1 ? '' : 's'}`);
+    } else if (mode === 'randomwalk') {
+      // A random walk giving up is never evidence no path exists -- it only ever
+      // sees one arbitrary stumble through the graph, unlike the other six modes,
+      // which are exhaustive. Wording it the same as "no path found" would claim
+      // something this algorithm can't actually back up.
+      showRouteTiming(`Random walk gave up after ${formatDuration(elapsedMs)} — doesn't mean no path exists`);
     } else {
-      const modeLabel = { bidirectional: 'Bidirectional BFS', bfs: 'BFS', dfs: 'DFS' }[mode] || mode;
-      alert(`No link path found between these articles using ${modeLabel}.`);
+      showRouteTiming(`${algo.label} · no path found · searched for ${formatDuration(elapsedMs)}`);
+      alert(`No link path found between these articles using ${algo.label}.`);
     }
   } catch (e) {
     if (e?.name === 'QueryEvicted') {
@@ -1918,22 +1900,27 @@ async function executePathfinder(mode) {
   } finally {
     searchActive = false;
     findRouteBtn.disabled = false;
-    if (findBfsRouteBtn) findBfsRouteBtn.disabled = false;
-    if (findDfsRouteBtn) findDfsRouteBtn.disabled = false;
     if (routeLoader) routeLoader.style.display = 'none';
-    if (routeBfsLoader) routeBfsLoader.style.display = 'none';
-    if (routeDfsLoader) routeDfsLoader.style.display = 'none';
   }
 }
 
   if (findRouteBtn && routeStart && routeEnd) {
-    findRouteBtn.onclick = () => executePathfinder('bidirectional');
+    findRouteBtn.onclick = () => executePathfinder(routeAlgoSelect ? routeAlgoSelect.value : 'bidirectional');
   }
-  if (findBfsRouteBtn && routeStart && routeEnd) {
-    findBfsRouteBtn.onclick = () => executePathfinder('bfs');
-  }
-  if (findDfsRouteBtn && routeStart && routeEnd) {
-    findDfsRouteBtn.onclick = () => executePathfinder('dfs');
+
+  // Route finder's random-pick button: two distinct uniformly-random titles, dropped
+  // into the inputs without auto-running the search (matching the search box's
+  // random button, which also just fills the field rather than acting on it).
+  const routeRandomBtn = $('route-random-btn');
+  if (routeRandomBtn && routeStart && routeEnd) {
+    routeRandomBtn.onclick = () => {
+      if (!titleOffsets) return; // titles.bin hasn't loaded yet
+      const a = randomTitle();
+      let b = randomTitle();
+      while (b === a) b = randomTitle();
+      routeStart.value = a;
+      routeEnd.value = b;
+    };
   }
 
 function cull(vs){
@@ -2249,10 +2236,13 @@ function cull(vs){
     get clickHistory() { return clickHistory.slice(); },
     dbQuery,
     pathfinders: {
-      astar: (a, b) => runAStarPathfinder(a, b),
+      astar: (a, b, opts) => runAStarPathfinder(a, b, opts),
       bfs: (a, b, opts) => runBidirectionalBFS(a, b, opts),
       simpleBfs: (a, b, opts) => runSimpleBFS(a, b, opts),
-      simpleDfs: (a, b, opts) => runSimpleDFS(a, b, opts)
+      simpleDfs: (a, b, opts) => runSimpleDFS(a, b, opts),
+      greedy: (a, b, opts) => runGreedyBestFirst(a, b, opts),
+      dijkstra: (a, b, opts) => runDijkstraWeighted(a, b, opts),
+      randomWalk: (a, b, opts) => runRandomWalk(a, b, opts)
     },
     stats: () => JSON.parse(JSON.stringify(qStats)),
     resetStats() {
@@ -2419,6 +2409,171 @@ async function fetchNeighboursFromDb(indices, priority = PRIORITY_CLICK, directi
 // from viewer_full.bin, so this ranking costs nothing.
 function orderByDegreeDesc(indices, degrees) {
   return indices.slice().sort((a, b) => (degrees[b] || 0) - (degrees[a] || 0));
+}
+
+// Binary min-heap ordered by `.f` -- shared by the three heap-guided pathfinders
+// below (A*, greedy best-first, Dijkstra).
+class MinHeap {
+  constructor() { this.heap = []; }
+  push(node) {
+    this.heap.push(node);
+    this._siftUp(this.heap.length - 1);
+  }
+  pop() {
+    if (this.heap.length === 0) return null;
+    const top = this.heap[0];
+    const end = this.heap.pop();
+    if (this.heap.length > 0) {
+      this.heap[0] = end;
+      this._siftDown(0);
+    }
+    return top;
+  }
+  _siftUp(idx) {
+    let parent;
+    while (idx > 0 && (parent = ((idx - 1) >> 1), this.heap[idx].f < this.heap[parent].f)) {
+      [this.heap[idx], this.heap[parent]] = [this.heap[parent], this.heap[idx]];
+      idx = parent;
+    }
+  }
+  _siftDown(idx) {
+    const length = this.heap.length;
+    while (true) {
+      let left = idx * 2 + 1;
+      let right = left + 1;
+      let smallest = idx;
+      if (left < length && this.heap[left].f < this.heap[smallest].f) smallest = left;
+      if (right < length && this.heap[right].f < this.heap[smallest].f) smallest = right;
+      if (smallest === idx) break;
+      [this.heap[idx], this.heap[smallest]] = [this.heap[smallest], this.heap[idx]];
+      idx = smallest;
+    }
+  }
+  size() { return this.heap.length; }
+}
+
+// Shared skeleton for the three heap-guided pathfinders (A*, greedy best-first,
+// Dijkstra/degree-weighted): pop the lowest-f node, expand its real out-links,
+// push each newly-improved neighbor. `stepCost(fromIdx, toIdx)` and
+// `heuristic(idx, endIdx)` are what actually distinguish the three -- see their
+// call sites below. Same onProgress/onEndpoints contract, and the same
+// once-per-popped-node batching, as every other pathfinder here (see
+// runSimpleDFS's comment on why per-edge batching is what made DFS hang).
+async function runHeapPathfinder(startId, endId, stepCost, heuristic, opts = {}) {
+  if (!db) return null;
+  const onProgress = opts.onProgress;
+  try {
+    const startIdx = findTitleIndexInTitlesBin(startId);
+    const endIdx = findTitleIndexInTitlesBin(endId);
+    if (startIdx === -1 || endIdx === -1) return null;
+    if (startIdx === endIdx) return [startId];
+    opts.onEndpoints?.(startIdx, endIdx);
+
+    const open = new MinHeap();
+    const gScore = new Map([[startIdx, 0]]);
+    const preds = new Map([[startIdx, null]]);
+    const closed = new Set();
+    open.push({ idx: startIdx, f: heuristic(startIdx, endIdx) });
+
+    while (open.size() > 0) {
+      const { idx: curr } = open.pop();
+      if (closed.has(curr)) continue; // stale duplicate heap entry from a since-improved node
+      closed.add(curr);
+
+      if (curr === endIdx) {
+        const pathIndices = [];
+        let cur = curr;
+        while (cur !== null && cur !== undefined) { pathIndices.push(cur); cur = preds.get(cur); }
+        pathIndices.reverse();
+        return await buildPathFromSimpleIndices(pathIndices);
+      }
+
+      const adjacency = await fetchNeighbours([curr], PRIORITY_CLICK, 'out');
+      const touchedEdges = [];
+      for (const neigh of adjacency.get(curr) || []) {
+        if (closed.has(neigh)) continue;
+        const tentativeG = gScore.get(curr) + stepCost(curr, neigh);
+        if (tentativeG < (gScore.get(neigh) ?? Infinity)) {
+          gScore.set(neigh, tentativeG);
+          preds.set(neigh, curr);
+          open.push({ idx: neigh, f: tentativeG + heuristic(neigh, endIdx) });
+          touchedEdges.push([curr, neigh]);
+        }
+      }
+      if (touchedEdges.length > 0) await onProgress?.(touchedEdges);
+    }
+  } catch (e) {
+    if (e?.name !== 'QueryEvicted') console.error("Heap pathfinder failed:", e);
+  }
+  return null;
+}
+
+const layoutDistance = (a, b) => Math.hypot(px[a] - px[b], py[a] - py[b]);
+
+// A*: real graph-hop cost (1 per edge) plus straight-line layout distance to
+// the target as the heuristic. Layout distance is admissible in spirit (nodes
+// close on screen tend to be few hops apart, since the force layout pulls
+// linked nodes together) but not a strict lower bound, so this isn't provably
+// optimal -- same caveat the original implementation this replaces carried.
+async function runAStarPathfinder(startId, endId, opts = {}) {
+  return runHeapPathfinder(startId, endId, () => 1, layoutDistance, opts);
+}
+
+// Greedy best-first: ignores accumulated path cost entirely (stepCost always
+// 0), always expands whichever open node LOOKS closest to the target on
+// screen. Fast, makes a visible beeline -- but unlike every other pathfinder
+// here, gives no guarantee of a short path, or even noticing a shorter one
+// existed.
+async function runGreedyBestFirst(startId, endId, opts = {}) {
+  return runHeapPathfinder(startId, endId, () => 0, layoutDistance, opts);
+}
+
+// Dijkstra with a degree-weighted step cost instead of a flat 1: entering a
+// mega-hub like "United States" costs 1 + log1p(itsDegree)*0.5 instead of
+// just 1, so the cheapest path tends to route through topically-related
+// articles rather than the same handful of hub pages every other algorithm
+// here funnels through. No heuristic (always 0), so this stays exhaustive and
+// optimal for that cost function -- Dijkstra's algorithm proper.
+async function runDijkstraWeighted(startId, endId, opts = {}) {
+  const cost = (a, b) => 1 + Math.log1p(nodeDegrees ? (nodeDegrees[b] || 0) : 0) * 0.5;
+  return runHeapPathfinder(startId, endId, cost, () => 0, opts);
+}
+
+// Random walk: no heuristic, no memory of a better path already found -- just
+// pick a uniformly random real out-link and go, repeat. Genuinely bad as a
+// pathfinder (can loop indefinitely, can dead-end in a sink with no
+// out-links), which is the point: a foil that makes the other six look as
+// deliberate as they are. Capped at maxSteps since, unlike the exhaustive
+// algorithms above, a stuck walk has no natural termination -- giving up here
+// is never evidence that no path exists, only that this particular random
+// stumble didn't find one (executePathfinder words the failure accordingly).
+async function runRandomWalk(startId, endId, opts = {}) {
+  if (!db) return null;
+  const maxSteps = opts.maxSteps ?? 20000;
+  const onProgress = opts.onProgress;
+  try {
+    const startIdx = findTitleIndexInTitlesBin(startId);
+    const endIdx = findTitleIndexInTitlesBin(endId);
+    if (startIdx === -1 || endIdx === -1) return null;
+    if (startIdx === endIdx) return [startId];
+    opts.onEndpoints?.(startIdx, endIdx);
+
+    const pathIndices = [startIdx];
+    let curr = startIdx;
+    for (let step = 0; step < maxSteps; step++) {
+      const adjacency = await fetchNeighbours([curr], PRIORITY_CLICK, 'out');
+      const neighbours = adjacency.get(curr) || [];
+      if (neighbours.length === 0) break; // dead end -- a sink page with no out-links
+      const next = neighbours[Math.floor(Math.random() * neighbours.length)];
+      await onProgress?.([[curr, next]]);
+      pathIndices.push(next);
+      curr = next;
+      if (curr === endIdx) return await buildPathFromSimpleIndices(pathIndices);
+    }
+  } catch (e) {
+    if (e?.name !== 'QueryEvicted') console.error("Random walk failed:", e);
+  }
+  return null;
 }
 
 async function runBidirectionalBFS(startId, endId, opts = {}) {
