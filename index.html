@@ -849,6 +849,33 @@
 
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
+        /* Reflects real bytes received for the assets blocking first paint (see
+           reportProgress/countingStream in engine.js) -- not a fake animated fill.
+           A real number moving is what makes a long wait feel shorter than a bare
+           spinner; a percentage that stalls or jumps backward would be worse than
+           no number at all, so this only ever renders what was actually measured. */
+        #loading-bar-track {
+            width: 220px;
+            height: 4px;
+            background: var(--color-graphite);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 18px;
+        }
+        #loading-bar-fill {
+            width: 0%;
+            height: 100%;
+            background: var(--color-lilac-haze);
+            border-radius: 2px;
+            transition: width 0.25s ease-out;
+        }
+        #loading-pct {
+            font-family: var(--font-geist);
+            font-size: 11px;
+            color: var(--color-ash);
+            margin-top: 8px;
+        }
+
         .panel {
             animation: springEntrance 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
         }
@@ -1100,6 +1127,10 @@
     <div id="loading-screen">
         <div class="loader-ring"></div>
         <div class="eyebrow" style="margin-bottom: 0;">Initializing Knowledge Graph</div>
+        <div id="loading-bar-track">
+            <div id="loading-bar-fill"></div>
+        </div>
+        <div id="loading-pct">0%</div>
         <div id="loading-text" style="font-size: 11px; color: var(--color-ash); margin-top: 8px;">Please wait while the web builds...</div>
     </div>
 

@@ -16,11 +16,50 @@ const $=id=>document.getElementById(id);
 // serving from the directory where these files actually live), then fall back
 // to the HF-hosted copy (same repo the SQLite DB is already served from).
 const HF_ASSET_BASE = 'https://huggingface.co/datasets/icybawss/wikipedia-graph-data/resolve/main';
-async function fetchAsset(name, optional) {
+
+// ── Loading-screen progress bar ─────────────────────────────────────────────
+// Tracks real bytes received for whichever assets are currently blocking first
+// paint (loadCoreAssets, below) -- a byte counter on the response stream plus
+// Content-Length, not a fake animated fill. Keyed by asset name so multiple
+// parallel fetches can each report in without clobbering each other; the
+// displayed percentage is bytes-loaded / bytes-total summed across every key
+// currently in the map.
+const loadProgress = {};
+function resetLoadProgress() { for (const k in loadProgress) delete loadProgress[k]; }
+function reportProgress(name, loaded, total) {
+  loadProgress[name] = { loaded, total };
+  let l = 0, t = 0;
+  for (const k in loadProgress) { l += loadProgress[k].loaded; t += loadProgress[k].total; }
+  const pct = t > 0 ? Math.min(100, Math.round((l / t) * 100)) : 0;
+  const fill = document.getElementById('loading-bar-fill');
+  const pctEl = document.getElementById('loading-pct');
+  if (fill) fill.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+}
+// Wraps a response body stream with a passthrough that reports bytes as they
+// arrive, without buffering or otherwise altering the stream itself.
+function countingStream(readable, name, total) {
+  let loaded = 0;
+  return readable.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      loaded += chunk.byteLength;
+      reportProgress(name, loaded, total);
+      controller.enqueue(chunk);
+    }
+  }));
+}
+
+async function fetchAsset(name, optional, progressTag) {
   for (const url of [`${name}?v=${V}`, `${HF_ASSET_BASE}/${name}`]) {
     try {
       const r = await fetch(url);
-      if (r.ok) return r.arrayBuffer();
+      if (r.ok) {
+        if (progressTag && r.body) {
+          const total = Number(r.headers.get('content-length')) || 0;
+          return await new Response(countingStream(r.body, progressTag, total)).arrayBuffer();
+        }
+        return r.arrayBuffer();
+      }
     } catch (e) { /* try next source */ }
   }
   if (optional) return null;
@@ -47,7 +86,12 @@ async function fetchGzipSameOrigin(name) {
     if (typeof DecompressionStream === 'undefined') return null; // old browser: caller falls back to v1
     const r = await fetch(`${name}?v=${V}`);
     if (!r.ok || !r.body) return null;
-    const stream = r.body.pipeThrough(new DecompressionStream('gzip'));
+    // Progress is tracked on the compressed bytes actually crossing the network
+    // (Content-Length here is the .gz size), before decompression -- that's the
+    // number that reflects real download progress.
+    const total = Number(r.headers.get('content-length')) || 0;
+    const counted = countingStream(r.body, name, total);
+    const stream = counted.pipeThrough(new DecompressionStream('gzip'));
     return await new Response(stream).arrayBuffer();
   } catch (e) { return null; }
 }
@@ -139,10 +183,11 @@ async function loadCoreAssets() {
       console.warn('v2 asset inflate failed, falling back to original assets:', e);
     }
   }
+  resetLoadProgress(); // the v2 attempt above may have left partial entries in the map
   const [nbuf, ebuf, tbuf] = await Promise.all([
-    fetchAsset('viewer_full.bin'),
-    fetchAsset('edgeTgt.bin'),
-    fetchAsset('titles.bin')
+    fetchAsset('viewer_full.bin', false, 'viewer_full.bin'),
+    fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin'),
+    fetchAsset('titles.bin', false, 'titles.bin')
   ]);
   return { nbuf, ebuf, tbuf };
 }
