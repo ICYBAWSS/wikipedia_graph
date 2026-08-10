@@ -25,7 +25,13 @@ const HF_ASSET_BASE = 'https://huggingface.co/datasets/icybawss/wikipedia-graph-
 // displayed percentage is bytes-loaded / bytes-total summed across every key
 // currently in the map.
 const loadProgress = {};
-function resetLoadProgress() { for (const k in loadProgress) delete loadProgress[k]; }
+// Clears only the given keys (or everything, if none given) -- the CSR fetches
+// now run concurrently with loadCoreAssets(), reporting under their own keys,
+// so a blanket clear here would wipe their in-flight progress too.
+function resetLoadProgress(keys) {
+  if (!keys) { for (const k in loadProgress) delete loadProgress[k]; return; }
+  for (const k of keys) delete loadProgress[k];
+}
 function reportProgress(name, loaded, total) {
   loadProgress[name] = { loaded, total };
   let l = 0, t = 0;
@@ -100,15 +106,24 @@ async function fetchGzipSameOrigin(name) {
 // ~250MB gzipped each they're too large for the same-origin git-hosted
 // approach the other three assets use (see build_csr_gz in
 // build_web_assets.py: plain gzip, ~1.4x, no quantization possible on
-// already-minimal uint32 node indices). No progress tracking here -- these
-// load in the background well after the loading screen (and its progress bar)
-// is already gone.
-async function fetchGzipHF(name) {
+// already-minimal uint32 node indices).
+//
+// These used to load in the background after the loading screen dismissed,
+// but that meant every interactive feature (search, node click, routing)
+// either silently fell back to slow per-node DB queries or -- worse, on a
+// cold load -- competed with the CSR download for the same bandwidth and
+// didn't resolve at all for over a minute. Simplest fix: block launch on
+// these too, same as the other three assets. Slower first paint, but
+// everything actually works the moment the site says it's ready.
+async function fetchGzipHF(name, progressTag) {
   try {
     if (typeof DecompressionStream === 'undefined') return null;
     const r = await fetch(`${HF_ASSET_BASE}/${name}.gz`);
     if (!r.ok || !r.body) return null;
-    const stream = r.body.pipeThrough(new DecompressionStream('gzip'));
+    const body = progressTag
+      ? countingStream(r.body, progressTag, Number(r.headers.get('content-length')) || 0)
+      : r.body;
+    const stream = body.pipeThrough(new DecompressionStream('gzip'));
     return await new Response(stream).arrayBuffer();
   } catch (e) { return null; }
 }
@@ -116,10 +131,10 @@ async function fetchGzipHF(name) {
 // One CSR file: gzip'd from HF, falling back to the original uncompressed file
 // (fetchAsset's existing local-then-HF behavior) if the gzip fetch fails or
 // DecompressionStream is unavailable.
-async function fetchCsr(name) {
-  const gz = await fetchGzipHF(name);
+async function fetchCsr(name, progressTag) {
+  const gz = await fetchGzipHF(name, progressTag);
   if (gz) return gz;
-  return fetchAsset(name, true);
+  return fetchAsset(name, true, progressTag);
 }
 
 function inflateViewerV2(buf) {
@@ -209,7 +224,9 @@ async function loadCoreAssets() {
       console.warn('v2 asset inflate failed, falling back to original assets:', e);
     }
   }
-  resetLoadProgress(); // the v2 attempt above may have left partial entries in the map
+  // Only this function's own keys -- CSR fetches run concurrently with this
+  // one (see startVisualization) and report progress under their own names.
+  resetLoadProgress(['viewer_v2.bin.gz', 'edgeTgt_v2.bin.gz', 'titles_v2.bin.gz']);
   const [nbuf, ebuf, tbuf] = await Promise.all([
     fetchAsset('viewer_full.bin', false, 'viewer_full.bin'),
     fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin'),
@@ -625,18 +642,21 @@ if(sbb) {
 // Load Coordinate Binaries and Connect SQLite VFS
 async function startVisualization() {
   if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
-  // Only the files needed to draw the galaxy AND resolve a title to a node index
-  // block the first render. titles.bin has to be in this set, not the background
-  // batch below: findTitleIndexInTitlesBin() has no live-DB fallback (only titleOf(),
-  // the reverse lookup, does), so searching or routing before it loads used to fail
-  // outright with "No link path found" instead of just being slow. The two adjacency
-  // CSRs are the only genuinely optional ones -- up to ~360MB each, and pathfinding
-  // already falls back to live DB queries (just slower) while they're missing -- so
-  // those are the ones fetched in the background and wired in whenever they land.
-  // loadCoreAssets() tries the compact quantized+gzipped same-origin versions
-  // first and transparently falls back to these three originals -- see its
-  // definition above for why.
-  const { nbuf, ebuf, tbuf } = await loadCoreAssets();
+  // Everything blocks launch: viewer/edge/titles (via loadCoreAssets, which
+  // tries the compact quantized+gzipped same-origin versions first and falls
+  // back to the originals) AND both adjacency CSRs. The CSRs used to load in
+  // the background after the site said it was ready, but that meant every
+  // interactive feature either silently fell back to slow per-node DB queries,
+  // or -- worse, on a cold load -- competed with the CSR download for the same
+  // bandwidth and didn't work at all for over a minute. Slower first paint,
+  // but nothing is shown as ready until it actually is. Kicked off together,
+  // not loadCoreAssets().then(...), so the CSR download overlaps with
+  // viewer/edge/titles instead of queuing behind them.
+  const [{ nbuf, ebuf, tbuf }, cbuf, cbufRev] = await Promise.all([
+    loadCoreAssets(),
+    fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin'),
+    fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin')
+  ]);
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
   const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
@@ -653,52 +673,40 @@ async function startVisualization() {
     }
   }
 
-  // Sequential, not Promise.all: adjacency_csr.bin (OUT-edges) is what the
-  // "instant connections" sidebar and every forward-direction pathfinder need;
-  // adjacency_csr_rev.bin (IN-edges) is only used by bidirectional search's
-  // backward half. Fetching both at once used to split bandwidth between them,
-  // so neither was ready as soon as it could have been -- with first paint now
-  // much faster than it used to be, users reach for a node's connections while
-  // this is still in flight far more often than before, and every extra second
-  // here is a second spent falling back to slow per-node DB queries instead.
-  // Loading the one that matters for most interactions first gets it wired in
-  // roughly twice as fast as splitting bandwidth ever did.
-  (async () => {
-    const cbuf = await fetchCsr('adjacency_csr.bin');
-    if (cbuf) {
-      const header = new Uint32Array(cbuf, 0, 2);
-      const csrFileN = header[0], csrE = header[1];
-      if (csrFileN === N) {
-        csrOffsets = new Uint32Array(cbuf, 8, csrFileN + 1);
-        csrNeighbors = new Uint32Array(cbuf, 8 + (csrFileN + 1) * 4, csrE);
-        csrN = csrFileN;
-        console.log(`In-memory adjacency (out) loaded: ${csrN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
-      } else {
-        console.warn(`adjacency_csr.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for pathfinding`);
-      }
+  // OUT-edges: what the "instant connections" sidebar and every forward-
+  // direction pathfinder need.
+  if (cbuf) {
+    const header = new Uint32Array(cbuf, 0, 2);
+    const csrFileN = header[0], csrE = header[1];
+    if (csrFileN === N) {
+      csrOffsets = new Uint32Array(cbuf, 8, csrFileN + 1);
+      csrNeighbors = new Uint32Array(cbuf, 8 + (csrFileN + 1) * 4, csrE);
+      csrN = csrFileN;
+      console.log(`In-memory adjacency (out) loaded: ${csrN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
+    } else {
+      console.warn(`adjacency_csr.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for pathfinding`);
     }
+  } else {
+    console.warn('adjacency_csr.bin failed to load from any source — pathfinding and instant connections will fall back to live DB queries');
+  }
 
-    // Route pathfinding needs BOTH directions eventually: the forward half of a
-    // bidirectional search must only ever follow real out-links (so the
-    // reconstructed route is something you could actually click through), and
-    // the backward half -- growing "who can reach the target" from the target
-    // side -- needs in-links to do that correctly. A single merged/undirected
-    // structure (the old approach) can't distinguish "I link to this" from
-    // "this links to me," so a route could silently include a hop with no real
-    // clickable link. It just doesn't need to block on this one first.
-    const cbufRev = await fetchCsr('adjacency_csr_rev.bin');
-    if (cbufRev) {
-      const header = new Uint32Array(cbufRev, 0, 2);
-      const csrFileN = header[0], csrE = header[1];
-      if (csrFileN === N) {
-        csrOffsetsRev = new Uint32Array(cbufRev, 8, csrFileN + 1);
-        csrNeighborsRev = new Uint32Array(cbufRev, 8 + (csrFileN + 1) * 4, csrE);
-        console.log(`In-memory adjacency (in) loaded: ${csrFileN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
-      } else {
-        console.warn(`adjacency_csr_rev.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for reverse pathfinding`);
-      }
+  // IN-edges: only used by bidirectional search's backward half (growing "who
+  // can reach the target" from the target side needs real in-links, not the
+  // same out-link structure walked backward -- see runBidirectionalBFS).
+  if (cbufRev) {
+    const header = new Uint32Array(cbufRev, 0, 2);
+    const csrFileN = header[0], csrE = header[1];
+    if (csrFileN === N) {
+      csrOffsetsRev = new Uint32Array(cbufRev, 8, csrFileN + 1);
+      csrNeighborsRev = new Uint32Array(cbufRev, 8 + (csrFileN + 1) * 4, csrE);
+      console.log(`In-memory adjacency (in) loaded: ${csrFileN.toLocaleString()} nodes, ${csrE.toLocaleString()} entries`);
+    } else {
+      console.warn(`adjacency_csr_rev.bin node count (${csrFileN}) doesn't match viewer_full.bin (${N}) — ignoring, falling back to live DB for reverse pathfinding`);
     }
-  })().catch(e => console.error('Background asset load failed:', e));
+  } else {
+    console.warn('adjacency_csr_rev.bin failed to load from any source — bidirectional pathfinding will fall back to live DB queries');
+  }
+
   px=new Float32Array(N); py=new Float32Array(N); const rad=new Float32Array(N), col=new Uint8Array(N*4);
   const deg=new Float32Array(N), cat=new Uint8Array(N);
   nodeDegrees = deg; // module-level pathfinders rank frontiers hub-first off this
