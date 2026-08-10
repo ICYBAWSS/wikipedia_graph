@@ -27,6 +27,124 @@ async function fetchAsset(name, optional) {
   throw new Error(`Failed to fetch required asset ${name} from any source`);
 }
 
+// ── Compact v2 assets ───────────────────────────────────────────────────────
+// viewer_v2.bin.gz / edgeTgt_v2.bin.gz / titles_v2.bin.gz carry the same data
+// as the v1 float32 originals, just quantized (coordinates -> uint16 on a
+// shared grid, degree -> a uint16 index into a ~4.4k-entry palette, title
+// length -> uint8) and gzipped -- see build_web_assets.py for the exact math
+// and why the precision loss is invisible (0.044-unit coordinate error, 0.06px
+// at a 4K full-graph view). Serving these instead of the originals is a 3x+
+// reduction in the ~330MB that used to block first paint. They're committed
+// same-origin (not on HF) specifically so the browser gets a stable URL and a
+// real Cache-Control/ETag instead of HF's no-store + freshly-signed CDN link
+// on every visit -- that's what made every repeat load re-download ~1GB.
+//
+// Each inflate function rebuilds the exact v1 byte layout (u32 N header +
+// float32 array) so nothing downstream of loadCoreAssets() needs to know or
+// care which path a given load came from.
+async function fetchGzipSameOrigin(name) {
+  try {
+    if (typeof DecompressionStream === 'undefined') return null; // old browser: caller falls back to v1
+    const r = await fetch(`${name}?v=${V}`);
+    if (!r.ok || !r.body) return null;
+    const stream = r.body.pipeThrough(new DecompressionStream('gzip'));
+    return await new Response(stream).arrayBuffer();
+  } catch (e) { return null; }
+}
+
+function inflateViewerV2(buf) {
+  if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== 'WGV2') throw new Error('bad viewer_v2 magic');
+  const head = new DataView(buf, 4, 20);
+  const n = head.getUint32(0, true), paletteLen = head.getUint32(4, true);
+  const lo = head.getFloat32(8, true), scale = head.getFloat32(12, true);
+  let off = 24;
+  const palette = new Float32Array(buf, off, paletteLen); off += paletteLen * 4;
+  const xq = new Uint16Array(buf, off, n); off += n * 2;
+  const yq = new Uint16Array(buf, off, n); off += n * 2;
+  const degIdx = new Uint16Array(buf, off, n); off += n * 2;
+  const catq = new Uint8Array(buf, off, n);
+
+  const out = new ArrayBuffer(4 + n * 4 * 4);
+  new Uint32Array(out, 0, 1)[0] = n;
+  const raw = new Float32Array(out, 4, n * 4);
+  for (let i = 0; i < n; i++) {
+    raw[i * 4] = xq[i] / scale + lo;
+    raw[i * 4 + 1] = yq[i] / scale + lo;
+    raw[i * 4 + 2] = palette[degIdx[i]];
+    raw[i * 4 + 3] = catq[i];
+  }
+  return { buf: out, lo, scale };
+}
+
+function inflateEdgeV2(buf, lo, scale) {
+  if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== 'WGE2') throw new Error('bad edgeTgt_v2 magic');
+  const n = new DataView(buf, 4, 4).getUint32(0, true);
+  let off = 8;
+  const maskBytes = Math.ceil(n / 8);
+  const mask = new Uint8Array(buf, off, maskBytes);
+  // build_edge() pads the mask to an even byte count so txq/tyq land uint16-
+  // aligned -- see its comment. Skip past that pad byte the same way.
+  off += maskBytes + (maskBytes % 2);
+  const txq = new Uint16Array(buf, off, n); off += n * 2;
+  const tyq = new Uint16Array(buf, off, n);
+
+  const out = new ArrayBuffer(4 + n * 2 * 4);
+  new Uint32Array(out, 0, 1)[0] = n;
+  const et = new Float32Array(out, 4, n * 2);
+  for (let i = 0; i < n; i++) {
+    if ((mask[i >> 3] >> (i & 7)) & 1) { et[i * 2] = txq[i] / scale + lo; et[i * 2 + 1] = tyq[i] / scale + lo; }
+    else { et[i * 2] = NaN; et[i * 2 + 1] = NaN; }
+  }
+  return out;
+}
+
+function inflateTitlesV2(buf) {
+  if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) !== 'WGT2') throw new Error('bad titles_v2 magic');
+  const n = new DataView(buf, 4, 4).getUint32(0, true);
+  const lengths = new Uint8Array(buf, 8, n);
+  const text = new Uint8Array(buf, 8 + n);
+
+  const out = new ArrayBuffer(4 + (n + 1) * 4 + text.length);
+  new Uint32Array(out, 0, 1)[0] = n;
+  const offsets = new Uint32Array(out, 4, n + 1);
+  let acc = 0;
+  for (let i = 0; i < n; i++) { offsets[i] = acc; acc += lengths[i]; }
+  offsets[n] = acc;
+  new Uint8Array(out, 4 + (n + 1) * 4).set(text);
+  return out;
+}
+
+// Returns {nbuf, ebuf, tbuf} in the same v1 byte layout startVisualization
+// already expects, trying the compact same-origin assets first and falling
+// back to the original uncompressed HF-hosted files (fetchAsset's existing
+// behavior) if any of the three are missing, corrupt, or the browser lacks
+// DecompressionStream. All-or-nothing on purpose: a mixed v2/v1 load isn't
+// worth the added complexity when the fallback already works end to end.
+async function loadCoreAssets() {
+  const [v2n, v2e, v2t] = await Promise.all([
+    fetchGzipSameOrigin('viewer_v2.bin.gz'),
+    fetchGzipSameOrigin('edgeTgt_v2.bin.gz'),
+    fetchGzipSameOrigin('titles_v2.bin.gz')
+  ]);
+  if (v2n && v2e && v2t) {
+    try {
+      const { buf: nbuf, lo, scale } = inflateViewerV2(v2n);
+      const ebuf = inflateEdgeV2(v2e, lo, scale);
+      const tbuf = inflateTitlesV2(v2t);
+      console.log('Loaded compact v2 assets (quantized + gzip, same-origin)');
+      return { nbuf, ebuf, tbuf };
+    } catch (e) {
+      console.warn('v2 asset inflate failed, falling back to original assets:', e);
+    }
+  }
+  const [nbuf, ebuf, tbuf] = await Promise.all([
+    fetchAsset('viewer_full.bin'),
+    fetchAsset('edgeTgt.bin'),
+    fetchAsset('titles.bin')
+  ]);
+  return { nbuf, ebuf, tbuf };
+}
+
 let db = null;
 let currentCullQueryId = 0;
 let currentRoutePath = null;
@@ -424,11 +542,10 @@ async function startVisualization() {
   // CSRs are the only genuinely optional ones -- up to ~360MB each, and pathfinding
   // already falls back to live DB queries (just slower) while they're missing -- so
   // those are the ones fetched in the background and wired in whenever they land.
-  const [nbuf, ebuf, tbuf] = await Promise.all([
-    fetchAsset('viewer_full.bin'),
-    fetchAsset('edgeTgt.bin'),
-    fetchAsset('titles.bin')
-  ]);
+  // loadCoreAssets() tries the compact quantized+gzipped same-origin versions
+  // first and transparently falls back to these three originals -- see its
+  // definition above for why.
+  const { nbuf, ebuf, tbuf } = await loadCoreAssets();
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
   const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
