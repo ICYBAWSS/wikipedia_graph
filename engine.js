@@ -2268,7 +2268,13 @@ function cull(vs){
   // hideAllNodes only suppresses the node dots at render time (see the ScatterplotLayer
   // below) — the loop itself always runs at full nodeBudget so the background edges,
   // which are collected in this same pass per node, aren't affected by it.
-  const M=(cx1-cx0+1)*(cy1-cy0+1), perCap=Math.max(1,Math.ceil(nodeBudget/M));
+  const popCells = [];
+  for (let cy = cy0; cy <= cy1; cy++) { const base = cy * G;
+    for (let cx = cx0; cx <= cx1; cx++) { const c = base + cx;
+      if (start[c+1] > start[c]) popCells.push(c);
+    }
+  }
+  const M_populated = popCells.length;
   let v=0, ec=0;
 
   // Shared by both the per-cell budget loop below and the "must-render" pass after
@@ -2333,11 +2339,22 @@ function cull(vs){
     v++;
   };
 
-  for(let cy=cy0;cy<=cy1&&v<nodeBudget;cy++){ const base=cy*G;
-    for(let cx=cx0;cx<=cx1&&v<nodeBudget;cx++){ const c=base+cx,s0=start[c],e0=start[c+1],take=Math.min(e0-s0,perCap);
-      for(let k=0;k<take&&v<nodeBudget;k++){ const i=order[s0+k];
-        if (hiddenCategories.size > 0 && hiddenCategories.has(cat[i])) continue; // legend eye-toggle
-        colorAndPlace(i);
+  if (M_populated > 0) {
+    let accumulator = 0;
+    const step = nodeBudget / M_populated;
+    for (let idx = 0; idx < M_populated && v < nodeBudget; idx++) {
+      const c = popCells[idx];
+      accumulator += step;
+      if (accumulator >= 1) {
+        const alloc = Math.floor(accumulator);
+        const s0 = start[c], e0 = start[c+1];
+        const take = Math.min(e0 - s0, alloc);
+        for (let k = 0; k < take && v < nodeBudget; k++) {
+          const i = order[s0 + k];
+          if (hiddenCategories.size > 0 && hiddenCategories.has(cat[i])) continue; // legend eye-toggle
+          colorAndPlace(i);
+        }
+        accumulator -= take;
       }
     }
   }
