@@ -260,7 +260,7 @@ let csrOffsetsRev = null, csrNeighborsRev = null; // IN-edges (adjacency_csr_rev
 // density/distance/strength, charge, collision, gravity — were force-simulation
 // parameters from a pre-rewrite version of this app; this engine has no physics
 // simulation at all, it's a static precomputed layout, so none of them did anything.)
-let nodeBudget = (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768) ? 30000 : 90000;       // how many nodes cull() draws per frame, ≤ BUDGET
+let nodeBudget = 90000;       // how many nodes cull() draws per frame, ≤ BUDGET
 let nodeSizeScale = 1.0;      // multiplies radiusMinPixels/radiusMaxPixels
 let edgeOpacity = 1.0;        // multiplies the background hairline edge layer's alpha
 let dimAlpha = 22;            // alpha used for off-route / unconnected "dimmed" nodes
@@ -676,18 +676,10 @@ async function startVisualization() {
   // but nothing is shown as ready until it actually is. Kicked off together,
   // not loadCoreAssets().then(...), so the CSR download overlaps with
   // viewer/edge/titles instead of queuing behind them.
-  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
-  if (isMobile) {
-    const budgetSlider = $('slider-node-budget'), budgetVal = $('node-budget-val');
-    if (budgetSlider) budgetSlider.value = 30000;
-    if (budgetVal) budgetVal.textContent = "30,000";
-    nodeBudget = 30000;
-  }
-
   const [{ nbuf, ebuf, tbuf }, cbuf, cbufRev] = await Promise.all([
     loadCoreAssets(),
-    isMobile ? Promise.resolve(null) : fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin'),
-    isMobile ? Promise.resolve(null) : fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin')
+    fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin'),
+    fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin')
   ]);
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
