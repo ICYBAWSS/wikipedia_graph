@@ -2612,6 +2612,33 @@ function cull(vs){
     }
   } // close cull
 
+  function showWelcomePopup() {
+    const welcomeOverlay = $('welcome-popup-overlay');
+    const dismissBtn = $('welcome-dismiss-btn');
+    if (!welcomeOverlay) return;
+    
+    // Check session storage so it is not intrusive for repeat loads
+    if (sessionStorage.getItem('welcome-dismissed') === 'true') {
+      return;
+    }
+    
+    welcomeOverlay.style.display = 'flex';
+    welcomeOverlay.style.opacity = '0';
+    // Force reflow
+    welcomeOverlay.offsetHeight;
+    welcomeOverlay.style.opacity = '1';
+    
+    if (dismissBtn) {
+      dismissBtn.onclick = () => {
+        welcomeOverlay.style.opacity = '0';
+        sessionStorage.setItem('welcome-dismissed', 'true');
+        setTimeout(() => {
+          welcomeOverlay.style.display = 'none';
+        }, 400);
+      };
+    }
+  }
+
   // Fit-to-bounds, not a guessed constant: minx is -bound and the grid is square
   // and centered on the origin (see startVisualization's `bound=Math.max(maxAbsX,
   // maxAbsY)*1.02`), so -minx*2 is the true diameter of the actual laid-out graph.
@@ -2626,14 +2653,25 @@ function cull(vs){
       // word-catch minigame (see initWordCatchGame) -- reveal a Continue button
       // instead and let dismissal be the user's call, whenever they're done.
       const btn=$('loading-continue-btn');
+      const dismissLoading = () => {
+        if(window.__wordCatchStop) window.__wordCatchStop();
+        const ls=$('loading-screen'); 
+        if(ls){ 
+          ls.style.transition='opacity .5s'; 
+          ls.style.opacity='0'; 
+          setTimeout(() => {
+            ls.style.display='none';
+            showWelcomePopup();
+          }, 500); 
+        } else {
+          showWelcomePopup();
+        }
+      };
       if(btn){
         btn.style.display='inline-flex';
-        btn.onclick=()=>{
-          if(window.__wordCatchStop) window.__wordCatchStop();
-          const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
-        };
+        btn.onclick = dismissLoading;
       } else {
-        const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
+        dismissLoading();
       }
     } else requestAnimationFrame(fit); })();
 

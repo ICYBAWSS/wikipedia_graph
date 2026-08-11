@@ -1355,6 +1355,36 @@
         <button id="loading-continue-btn" class="wiki-link-btn" style="display:none; margin-top: 16px; width: auto; padding: 8px 20px; font-size: 11px; background: var(--color-bone); color: var(--surface-void); border: none;">Continue &rarr;</button>
     </div>
 
+    <!-- Welcome/Purpose Popup Overlay -->
+    <div id="welcome-popup-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; align-items: center; justify-content: center; background: rgba(12, 11, 10, 0.75); backdrop-filter: blur(12px); box-sizing: border-box; padding: 20px; transition: opacity 0.4s ease;">
+        <div class="glass" style="max-width: 440px; width: 100%; padding: 32px; border-radius: 12px; background: rgba(22, 20, 18, 0.95); text-align: center; border: 1px solid var(--color-graphite); box-shadow: 0 20px 40px rgba(0,0,0,0.5);">
+            <div style="font-family: var(--font-inter); font-size: 18px; font-weight: 600; color: var(--color-lilac-haze); margin-bottom: 12px;">Wikipedia Knowledge Galaxy</div>
+            
+            <div style="font-family: var(--font-inter); font-size: 12.5px; color: var(--color-bone); line-height: 1.6; margin-bottom: 24px; text-align: left; opacity: 0.95;">
+                <p style="margin: 0 0 14px 0; text-align: center; font-size: 13.5px; font-weight: 500; color: var(--color-bone);">
+                    This space maps the massive connections of English Wikipedia to visualize how expansive human knowledge is and see how different topics are related.
+                </p>
+                <div style="border-top: 1px solid var(--color-graphite); margin-top: 16px; padding-top: 16px;">
+                    <div style="font-weight: 600; font-size: 11.5px; color: var(--color-lilac-haze); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Quick Guide:</div>
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px; font-size: 11.5px;">
+                        <span style="color: var(--color-lilac-haze); font-weight: 600;">🔍</span>
+                        <span><b>Search</b> for specific articles and jump directly to their positions.</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px; font-size: 11.5px;">
+                        <span style="color: var(--color-lilac-haze); font-weight: 600;">🛤️</span>
+                        <span><b>Find routes</b> between arbitrary topics using optimized pathfinders.</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; font-size: 11.5px;">
+                        <span style="color: var(--color-lilac-haze); font-weight: 600;">🌌</span>
+                        <span><b>Navigate</b> the galaxy using mouse/touch pan, scroll zoom, and hover preview.</span>
+                    </div>
+                </div>
+            </div>
+            
+            <button id="welcome-dismiss-btn" class="wiki-link-btn" style="width: auto; padding: 10px 24px; font-size: 12px; font-weight: 600; background: var(--color-bone); color: var(--surface-void); border: none; cursor: pointer; border-radius: 4px; box-shadow: 0 4px 12px rgba(255,255,255,0.05);">Enter Galaxy &rarr;</button>
+        </div>
+    </div>
+
     <!-- Graph Visual Area -->
     <div id="graph-container">
         <canvas id="graph-canvas"></canvas>
