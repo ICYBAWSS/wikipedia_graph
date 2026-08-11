@@ -808,7 +808,10 @@ async function startVisualization() {
 
   // Populate Stats Panel Default Count
   if($('stat-nodes')) $('stat-nodes').textContent = N.toLocaleString();
-  if($('stat-links')) $('stat-links').textContent = (N * 25).toLocaleString();
+  if($('stat-links')) {
+    const edgeCount = (csrNeighbors && csrNeighbors.length > 0) ? csrNeighbors.length : 100395890;
+    $('stat-links').textContent = edgeCount.toLocaleString();
+  }
 
   // Try to connect to SQLite worker
   try {

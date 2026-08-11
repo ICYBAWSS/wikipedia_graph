@@ -22,6 +22,12 @@ test_scrape/status_report.log
 test_scrape/libs/
 test_scrape/legacy/
 test_scrape/.DS_Store
+
+# Large/Compressed/Backup files
+*.gz
+*.bak
+backups/
+
 *.pyc
 key.txt*
 reference_repo/
