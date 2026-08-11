@@ -208,11 +208,10 @@ function inflateTitlesV2(buf) {
 // DecompressionStream. All-or-nothing on purpose: a mixed v2/v1 load isn't
 // worth the added complexity when the fallback already works end to end.
 async function loadCoreAssets() {
-  const [v2n, v2e, v2t] = await Promise.all([
-    fetchGzipSameOrigin('viewer_v2.bin.gz'),
-    fetchGzipSameOrigin('edgeTgt_v2.bin.gz'),
-    fetchGzipSameOrigin('titles_v2.bin.gz')
-  ]);
+  const v2n = await fetchGzipSameOrigin('viewer_v2.bin.gz');
+  const v2e = await fetchGzipSameOrigin('edgeTgt_v2.bin.gz');
+  const v2t = await fetchGzipSameOrigin('titles_v2.bin.gz');
+  
   if (v2n && v2e && v2t) {
     try {
       const { buf: nbuf, lo, scale } = inflateViewerV2(v2n);
@@ -227,11 +226,9 @@ async function loadCoreAssets() {
   // Only this function's own keys -- CSR fetches run concurrently with this
   // one (see startVisualization) and report progress under their own names.
   resetLoadProgress(['viewer_v2.bin.gz', 'edgeTgt_v2.bin.gz', 'titles_v2.bin.gz']);
-  const [nbuf, ebuf, tbuf] = await Promise.all([
-    fetchAsset('viewer_full.bin', false, 'viewer_full.bin'),
-    fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin'),
-    fetchAsset('titles.bin', false, 'titles.bin')
-  ]);
+  const nbuf = await fetchAsset('viewer_full.bin', false, 'viewer_full.bin');
+  const ebuf = await fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin');
+  const tbuf = await fetchAsset('titles.bin', false, 'titles.bin');
   return { nbuf, ebuf, tbuf };
 }
 
@@ -673,14 +670,14 @@ async function startVisualization() {
   // interactive feature either silently fell back to slow per-node DB queries,
   // or -- worse, on a cold load -- competed with the CSR download for the same
   // bandwidth and didn't work at all for over a minute. Slower first paint,
-  // but nothing is shown as ready until it actually is. Kicked off together,
-  // not loadCoreAssets().then(...), so the CSR download overlaps with
-  // viewer/edge/titles instead of queuing behind them.
-  const [{ nbuf, ebuf, tbuf }, cbuf, cbufRev] = await Promise.all([
-    loadCoreAssets(),
-    fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin'),
-    fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin')
-  ]);
+  if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
+  const { nbuf, ebuf, tbuf } = await loadCoreAssets();
+
+  if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (1/2)...";
+  const cbuf = await fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin');
+
+  if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (2/2)...";
+  const cbufRev = await fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin');
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
   const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
