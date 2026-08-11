@@ -919,7 +919,7 @@ async function startVisualization() {
 startVisualization().catch(e=>console.error("Visualizer initialization failed:", e));
 
 // ── Loading-screen minigame ─────────────────────────────────────────────────
-// Catch words that are really linked from the topic shown, dodge the ones that
+// Catch words that are related to the topic shown, dodge the ones that
 // aren't. Answer key (word_catch_data.json) is precomputed offline from the
 // same DB the CSR is built from -- see build_word_catch_data.py -- so this
 // works immediately and never waits on the CSR/DB the rest of the site needs.
