@@ -932,10 +932,23 @@ startVisualization().catch(e=>console.error("Visualizer initialization failed:",
 // button appears instead so a mid-round player isn't yanked out.
 (function wireWordCatchStartButton() {
   const btn = $('wc-start-btn');
+  const wrap = $('word-catch');
+  const playBtn = $('wc-play-btn');
+  const instructions = $('wc-instructions');
   if (!btn) return;
   btn.addEventListener('click', () => {
     btn.style.display = 'none';
-    initWordCatchGame().catch(e => console.error('word-catch init failed:', e));
+    if (wrap) wrap.style.display = 'flex';
+    if (instructions) instructions.style.display = 'flex';
+    
+    if (playBtn) {
+      playBtn.addEventListener('click', () => {
+        if (instructions) instructions.style.display = 'none';
+        initWordCatchGame().catch(e => console.error('word-catch init failed:', e));
+      }, { once: true });
+    } else {
+      initWordCatchGame().catch(e => console.error('word-catch init failed:', e));
+    }
   }, { once: true });
 })();
 
