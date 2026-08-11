@@ -208,9 +208,20 @@ function inflateTitlesV2(buf) {
 // DecompressionStream. All-or-nothing on purpose: a mixed v2/v1 load isn't
 // worth the added complexity when the fallback already works end to end.
 async function loadCoreAssets() {
-  const v2n = await fetchGzipSameOrigin('viewer_v2.bin.gz');
-  const v2e = await fetchGzipSameOrigin('edgeTgt_v2.bin.gz');
-  const v2t = await fetchGzipSameOrigin('titles_v2.bin.gz');
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
+  
+  let v2n, v2e, v2t;
+  if (isMobile) {
+    v2n = await fetchGzipSameOrigin('viewer_v2.bin.gz');
+    v2e = await fetchGzipSameOrigin('edgeTgt_v2.bin.gz');
+    v2t = await fetchGzipSameOrigin('titles_v2.bin.gz');
+  } else {
+    [v2n, v2e, v2t] = await Promise.all([
+      fetchGzipSameOrigin('viewer_v2.bin.gz'),
+      fetchGzipSameOrigin('edgeTgt_v2.bin.gz'),
+      fetchGzipSameOrigin('titles_v2.bin.gz')
+    ]);
+  }
   
   if (v2n && v2e && v2t) {
     try {
@@ -226,9 +237,19 @@ async function loadCoreAssets() {
   // Only this function's own keys -- CSR fetches run concurrently with this
   // one (see startVisualization) and report progress under their own names.
   resetLoadProgress(['viewer_v2.bin.gz', 'edgeTgt_v2.bin.gz', 'titles_v2.bin.gz']);
-  const nbuf = await fetchAsset('viewer_full.bin', false, 'viewer_full.bin');
-  const ebuf = await fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin');
-  const tbuf = await fetchAsset('titles.bin', false, 'titles.bin');
+  
+  let nbuf, ebuf, tbuf;
+  if (isMobile) {
+    nbuf = await fetchAsset('viewer_full.bin', false, 'viewer_full.bin');
+    ebuf = await fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin');
+    tbuf = await fetchAsset('titles.bin', false, 'titles.bin');
+  } else {
+    [nbuf, ebuf, tbuf] = await Promise.all([
+      fetchAsset('viewer_full.bin', false, 'viewer_full.bin'),
+      fetchAsset('edgeTgt.bin', false, 'edgeTgt.bin'),
+      fetchAsset('titles.bin', false, 'titles.bin')
+    ]);
+  }
   return { nbuf, ebuf, tbuf };
 }
 
@@ -662,22 +683,29 @@ if(sbb) {
 
 // Load Coordinate Binaries and Connect SQLite VFS
 async function startVisualization() {
-  if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
-  // Everything blocks launch: viewer/edge/titles (via loadCoreAssets, which
-  // tries the compact quantized+gzipped same-origin versions first and falls
-  // back to the originals) AND both adjacency CSRs. The CSRs used to load in
-  // the background after the site said it was ready, but that meant every
-  // interactive feature either silently fell back to slow per-node DB queries,
-  // or -- worse, on a cold load -- competed with the CSR download for the same
-  // bandwidth and didn't work at all for over a minute. Slower first paint,
-  if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
-  const { nbuf, ebuf, tbuf } = await loadCoreAssets();
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth <= 768;
+  
+  let nbuf, ebuf, tbuf, cbuf, cbufRev;
+  if (isMobile) {
+    if ($('loading-text')) $('loading-text').textContent = "Downloading node coordinates...";
+    const core = await loadCoreAssets();
+    nbuf = core.nbuf; ebuf = core.ebuf; tbuf = core.tbuf;
 
-  if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (1/2)...";
-  const cbuf = await fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin');
+    if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (1/2)...";
+    cbuf = await fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin');
 
-  if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (2/2)...";
-  const cbufRev = await fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin');
+    if ($('loading-text')) $('loading-text').textContent = "Downloading adjacency list (2/2)...";
+    cbufRev = await fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin');
+  } else {
+    if ($('loading-text')) $('loading-text').textContent = "Downloading visualizer data...";
+    const [core, c, cRev] = await Promise.all([
+      loadCoreAssets(),
+      fetchCsr('adjacency_csr.bin', 'adjacency_csr.bin'),
+      fetchCsr('adjacency_csr_rev.bin', 'adjacency_csr_rev.bin')
+    ]);
+    nbuf = core.nbuf; ebuf = core.ebuf; tbuf = core.tbuf;
+    cbuf = c; cbufRev = cRev;
+  }
 
   const N=new Uint32Array(nbuf,0,1)[0]; const raw=new Float32Array(nbuf,4,N*4);
   const et=new Float32Array(ebuf,4,N*2);          // parallel: node i's strongest-neighbor pos (NaN if none)
