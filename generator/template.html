@@ -1055,7 +1055,6 @@
                 <div class="mini-loader" id="route-loader"></div>
             </button>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
-                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
                 <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
         </div>
@@ -1363,6 +1362,23 @@
             "Other & General": "#c3aed6"
         };
 
+        function escapeHtml(str) {
+            return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        /**
+         * Returns HTML where every occurrence of `articleName` in `rawText`
+         * is wrapped in a colored <span> using the article's category color.
+         */
+        function highlightMention(rawText, articleName, color) {
+            if (!articleName || !color) return escapeHtml(rawText);
+            const escaped = escapeHtml(rawText);
+            const escapedName = escapeHtml(articleName);
+            const rePattern = escapedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`(${rePattern})`, 'gi');
+            return escaped.replace(re, `<span style="color:${color}; font-style:normal; font-weight:600; opacity:1;">$1</span>`);
+        }
+
         // --- DOM REFERENCES ---
         const canvas = document.getElementById("graph-canvas");
         const ctx = canvas.getContext("2d");
@@ -1656,12 +1672,18 @@
             
             while (stmt.step()) {
                 const row = stmt.getAsObject();
+                const linkedMeta = nodeMetadata.get(row.id);
+                const linkedColor = linkedMeta ? (categoryColors[linkedMeta.category] || null) : null;
+
                 const item = document.createElement("li");
                 item.className = "connection-item";
                 
                 const main = document.createElement("div");
                 main.className = "connection-main";
-                main.innerHTML = `<span>${row.id}</span><span class="connection-tag">${row.type}</span>`;
+                const nameHtml = linkedColor
+                    ? `<span style="color:${linkedColor}; font-weight:600;">${escapeHtml(row.id)}</span>`
+                    : `<span>${escapeHtml(row.id)}</span>`;
+                main.innerHTML = `${nameHtml}<span class="connection-tag">${row.type}</span>`;
                 main.onclick = (e) => {
                     e.stopPropagation();
                     const s = db.prepare("SELECT * FROM nodes WHERE id = :id");
@@ -1674,7 +1696,8 @@
                 if (row.context) {
                     const ctxDiv = document.createElement("div");
                     ctxDiv.className = "connection-context";
-                    ctxDiv.textContent = `"${row.context}"`;
+                    const highlighted = highlightMention(row.context, row.id, linkedColor);
+                    ctxDiv.innerHTML = `&ldquo;${highlighted}&rdquo;`;
                     ctxDiv.onclick = (e) => {
                         e.stopPropagation();
                         ctxDiv.classList.toggle("expanded");
@@ -1733,10 +1756,39 @@
                     for (let i = 0; i < path.length - 1; i++) activePathLinks.add(`${path[i]}->${path[i+1]}`);
                     const container = document.getElementById("route-result-container"), text = document.getElementById("route-text-path");
                     text.innerHTML = ""; path.forEach((t, i) => {
+                        const meta = nodeMetadata.get(t);
+                        const color = meta ? (categoryColors[meta.category] || null) : null;
+                        const nameHtml = color
+                            ? `<span style="color:${color}; font-weight:600;">${escapeHtml(t)}</span>`
+                            : `<span>${escapeHtml(t)}</span>`;
+
                         const step = document.createElement("div"); step.style.cursor = "pointer"; step.style.display = "flex"; step.style.gap = "8px";
-                        step.innerHTML = `<span style="opacity:0.6">${i+1}.</span> <span>${t}</span>`;
+                        step.innerHTML = `<span style="opacity:0.6">${i+1}.</span> ${nameHtml}`;
                         step.onclick = () => { const s = db.prepare("SELECT * FROM nodes WHERE id=:id"); s.bind({":id":t}); if(s.step()) selectNode(s.getAsObject()); s.free(); };
                         text.appendChild(step);
+
+                        // Show link context between this step and the next
+                        if (i < path.length - 1) {
+                            const nextId = path[i + 1];
+                            const ctxStmt = db.prepare("SELECT context FROM links WHERE (source=:s AND target=:t) OR (source=:t AND target=:s) LIMIT 1");
+                            ctxStmt.bind({ ":s": t, ":t": nextId });
+                            if (ctxStmt.step()) {
+                                const ctxRow = ctxStmt.getAsObject();
+                                if (ctxRow.context) {
+                                    const nextMeta = nodeMetadata.get(nextId);
+                                    const nextColor = nextMeta ? (categoryColors[nextMeta.category] || null) : null;
+                                    const ctxDiv = document.createElement("div");
+                                    ctxDiv.className = "connection-context";
+                                    ctxDiv.style.marginLeft = "18px";
+                                    ctxDiv.style.marginBottom = "4px";
+                                    const highlighted = highlightMention(ctxRow.context, nextId, nextColor);
+                                    ctxDiv.innerHTML = `&ldquo;${highlighted}&rdquo;`;
+                                    ctxDiv.onclick = () => ctxDiv.classList.toggle("expanded");
+                                    text.appendChild(ctxDiv);
+                                }
+                            }
+                            ctxStmt.free();
+                        }
                     });
                     container.style.display = "block";
                     const sStmt = db.prepare("SELECT * FROM nodes WHERE id=:id"); sStmt.bind({":id":startId});
@@ -1782,7 +1834,7 @@
                 s4.free();
 
                 adjacencyList = new Map(); linkCache = [];
-                const s5 = db.prepare("SELECT source, target FROM links");
+                const s5 = db.prepare("SELECT source, target FROM links WHERE context IS NOT NULL AND context != ''");
                 while (s5.step()) {
                     const { source, target } = s5.getAsObject();
                     if (!adjacencyList.has(source)) adjacencyList.set(source, []);

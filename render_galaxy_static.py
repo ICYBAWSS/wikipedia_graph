@@ -160,6 +160,16 @@ def render_massive_galaxy():
     colors_matrix = get_category_colors(num_coords, structure_db, cache_db)
     v_color = g.new_vertex_property("vector<double>")
     v_color.set_2d_array(colors_matrix)
+    
+    # Map pageviews to variable vertex sizes to match the Cosmic Web Tiers
+    v_size = g.new_vertex_property("double")
+    if cols >= 3:
+        # data has shape (N, cols). views is column index 2.
+        # Log scale: base size 1.2, hubs scale up
+        views = data[:, 2]
+        v_size.a = np.log1p(views) * 0.4 + 1.2
+    else:
+        v_size.a = 2.7 # fallback flat size
 
     # --- 5. RENDER THE PLOT ---
     print(f"Step 5: Rendering high-res RAW image to {output_image}...")
@@ -170,7 +180,7 @@ def render_massive_galaxy():
         pos=pos,
         output=output_image,
         output_size=(32000, 32000),  # Max safe size under Cairo's 32767 coordinate limit
-        vertex_size=2.7,            # Scaled down proportionally for 32000px width
+        vertex_size=v_size,          # Dynamic star sizes based on pageviews
         vertex_fill_color=v_color,
         vertex_pen_width=0, 
         edge_pen_width=0.14,        # Scaled down proportionally for 32000px width

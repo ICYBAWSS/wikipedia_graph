@@ -1055,7 +1055,6 @@
                 <div class="mini-loader" id="route-loader"></div>
             </button>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
-                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
                 <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
         </div>
@@ -1782,7 +1781,7 @@
                 s4.free();
 
                 adjacencyList = new Map(); linkCache = [];
-                const s5 = db.prepare("SELECT source, target FROM links");
+                const s5 = db.prepare("SELECT source, target FROM links WHERE context IS NOT NULL AND context != ''");
                 while (s5.step()) {
                     const { source, target } = s5.getAsObject();
                     if (!adjacencyList.has(source)) adjacencyList.set(source, []);

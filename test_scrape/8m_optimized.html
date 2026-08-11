@@ -1043,7 +1043,6 @@
                 <div class="mini-loader" id="route-loader"></div>
             </button>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
-                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
                 <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
         </div>
@@ -2775,6 +2774,25 @@ ${arg.stack}`;
 
         let activeQueryNodeId = null;
 
+        /**
+         * Returns HTML where every occurrence of `articleName` in `rawText`
+         * is wrapped in a colored <span> using the article's category color.
+         * The match is case-insensitive and whole-word aware.
+         */
+        function highlightMention(rawText, articleName, color) {
+            if (!articleName || !color) return escapeHtml(rawText);
+            const escaped = escapeHtml(rawText);
+            const escapedName = escapeHtml(articleName);
+            // Escape special regex chars in the article name
+            const rePattern = escapedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(`(${rePattern})`, 'gi');
+            return escaped.replace(re, `<span style="color:${color}; font-style:normal; font-weight:600; opacity:1;">$1</span>`);
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
         // VFS details query and Sidebar population
         async function showNodeDetails(nodeId) {
             activeQueryNodeId = nodeId;
@@ -2800,24 +2818,41 @@ ${arg.stack}`;
             connList.innerHTML = "";
             
             const selectedLinksIndices = [];
-
-            const linksRows = await db.query(`
-                SELECT target as id, context, 'out' as type FROM links WHERE source = ? 
-                UNION ALL 
-                SELECT source as id, context, 'in' as type FROM links WHERE target = ? 
-                ORDER BY type DESC LIMIT ?
-            `, [nodeId, nodeId, currentDensity]) || [];
-            if (activeQueryNodeId !== nodeId) return;
-
             const nodeIndex = parseInt(nodeId.split('_')[1]) - 1;
 
+            // Show connection loading spinner
+            connList.innerHTML = `
+              <div id="connections-loader" style="padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--color-ash);">
+                <div class="mini-loader" style="display: block; width: 16px; height: 16px; border-color: rgba(255,255,255,0.1); border-top-color: var(--color-lilac-haze); border-width: 2px;"></div>
+                <span>Loading connections…</span>
+              </div>`;
+
+            const linksRows = await db.query(`
+                SELECT l.target as id, l.context, 'out' as type, n.category
+                FROM links l LEFT JOIN nodes n ON n.id = l.target
+                WHERE l.source_idx = ?
+                UNION ALL
+                SELECT l.source as id, l.context, 'in' as type, n.category
+                FROM links l LEFT JOIN nodes n ON n.id = l.source
+                WHERE l.target_idx = ?
+                ORDER BY type DESC LIMIT ?
+            `, [nodeIndex, nodeIndex, currentDensity]) || [];
+            if (activeQueryNodeId !== nodeId) return;
+
+            connList.innerHTML = "";
+
             linksRows.forEach(row => {
+                const linkedColor = categoryColors[row.category] || null;
+
                 const item = document.createElement("li");
                 item.className = "connection-item";
                 
                 const main = document.createElement("div");
                 main.className = "connection-main";
-                main.innerHTML = `<span>${row.id}</span><span class="connection-tag">${row.type}</span>`;
+                const nameHtml = linkedColor
+                    ? `<span style="color:${linkedColor}; font-weight:600;">${escapeHtml(row.id)}</span>`
+                    : `<span>${escapeHtml(row.id)}</span>`;
+                main.innerHTML = `${nameHtml}<span class="connection-tag">${row.type}</span>`;
                 main.onclick = async (e) => {
                     e.stopPropagation();
                     const targetIndex = parseInt(row.id.split('_')[1]) - 1;
@@ -2828,7 +2863,8 @@ ${arg.stack}`;
                 if (row.context) {
                     const ctxDiv = document.createElement("div");
                     ctxDiv.className = "connection-context";
-                    ctxDiv.textContent = `"${row.context}"`;
+                    const highlighted = highlightMention(row.context, row.id, linkedColor);
+                    ctxDiv.innerHTML = `&ldquo;${highlighted}&rdquo;`;
                     ctxDiv.onclick = (e) => {
                         e.stopPropagation();
                         ctxDiv.classList.toggle("expanded");
@@ -2950,16 +2986,69 @@ ${arg.stack}`;
                 const path = await runBidirectionalBFS(startId, endId);
                 if (path) {
                     routePath.innerHTML = "";
+
+                    // Batch-fetch categories for all nodes in path
+                    const placeholders = path.map(() => '?').join(',');
+                    const catRows = await db.query(
+                        `SELECT id, category FROM nodes WHERE id IN (${placeholders})`,
+                        path
+                    ) || [];
+                    const pathCategories = new Map(catRows.map(r => [r.id, r.category]));
+
+                    // Batch-fetch link contexts between consecutive path nodes
+                    const contextMap = new Map();
+                    for (let i = 0; i < path.length - 1; i++) {
+                        const src = path[i], tgt = path[i + 1];
+                        const srcIdx = parseInt(src.split('_')[1]) - 1;
+                        const tgtIdx = parseInt(tgt.split('_')[1]) - 1;
+                        const ctxRows = await db.query(
+                            `SELECT context FROM links 
+                             WHERE source_idx = ? AND target_idx = ?
+                             UNION ALL
+                             SELECT context FROM links 
+                             WHERE source_idx = ? AND target_idx = ?
+                             LIMIT 1`,
+                            [srcIdx, tgtIdx, tgtIdx, srcIdx]
+                        ) || [];
+                        if (ctxRows.length && ctxRows[0].context) {
+                            contextMap.set(`${src}->${tgt}`, ctxRows[0].context);
+                        }
+                    }
+
                     path.forEach((nodeId, idx) => {
+                        const cat = pathCategories.get(nodeId);
+                        const color = categoryColors[cat] || null;
+
                         const step = document.createElement("div");
                         step.className = "route-step";
                         step.style.cursor = "pointer";
-                        step.innerHTML = `<span style="opacity:0.5; font-family:var(--font-geist);">${idx+1}.</span> <strong>${nodeId}</strong>`;
+                        const nameHtml = color
+                            ? `<strong style="color:${color};">${escapeHtml(nodeId)}</strong>`
+                            : `<strong>${escapeHtml(nodeId)}</strong>`;
+                        step.innerHTML = `<span style="opacity:0.5; font-family:var(--font-geist);">${idx+1}.</span> ${nameHtml}`;
                         step.onclick = async () => {
                             const nodeIndex = parseInt(nodeId.split('_')[1]) - 1;
                             await selectNode(nodeIndex);
                         };
                         routePath.appendChild(step);
+
+                        // Show link context between this step and the next
+                        if (idx < path.length - 1) {
+                            const nextId = path[idx + 1];
+                            const ctx = contextMap.get(`${nodeId}->${nextId}`);
+                            if (ctx) {
+                                const nextCat = pathCategories.get(nextId);
+                                const nextColor = categoryColors[nextCat] || null;
+                                const ctxDiv = document.createElement("div");
+                                ctxDiv.className = "connection-context";
+                                ctxDiv.style.marginLeft = "18px";
+                                ctxDiv.style.marginBottom = "4px";
+                                const highlighted = highlightMention(ctx, nextId, nextColor);
+                                ctxDiv.innerHTML = `&ldquo;${highlighted}&rdquo;`;
+                                ctxDiv.onclick = () => ctxDiv.classList.toggle("expanded");
+                                routePath.appendChild(ctxDiv);
+                            }
+                        }
                     });
                     routeContainer.style.display = "block";
 
@@ -3008,7 +3097,7 @@ ${arg.stack}`;
                 const queryNodes = startFrontier;
                 const placeholders = queryNodes.map(() => '?').join(',');
                 
-                const result = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholders}) OR target IN (${placeholders})`, [...queryNodes, ...queryNodes]);
+                const result = await db.exec(`SELECT source, target FROM links WHERE (source IN (${placeholders}) OR target IN (${placeholders})) AND context IS NOT NULL AND context != ""`, [...queryNodes, ...queryNodes]);
                 const rows = (result && result[0] && result[0].values) || [];
                 for (const [src, tgt] of rows) {
                     for (const [curr, neigh] of [[src, tgt], [tgt, src]]) {
@@ -3032,7 +3121,7 @@ ${arg.stack}`;
                 const queryNodesEnd = endFrontier;
                 const placeholdersEnd = queryNodesEnd.map(() => '?').join(',');
 
-                const resultEnd = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholdersEnd}) OR target IN (${placeholdersEnd})`, [...queryNodesEnd, ...queryNodesEnd]);
+                const resultEnd = await db.exec(`SELECT source, target FROM links WHERE (source IN (${placeholdersEnd}) OR target IN (${placeholdersEnd})) AND context IS NOT NULL AND context != ""`, [...queryNodesEnd, ...queryNodesEnd]);
                 const rowsEnd = (resultEnd && resultEnd[0] && resultEnd[0].values) || [];
                 for (const [src, tgt] of rowsEnd) {
                     for (const [curr, neigh] of [[src, tgt], [tgt, src]]) {

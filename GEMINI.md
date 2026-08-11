@@ -19,6 +19,14 @@
     - Added `safe_request` wrapper with exponential backoff for handling `429 Too Many Requests`.
     - Persistent "Resume" capability: Crawler tracks progress in `wiki_cache.db` and can pick up exactly where it left off.
     - Circuit Breaker: Automatically stops execution after 5 consecutive failed articles to prevent IP bans.
+- **GPU Rendering & Layout Compiler Stability:**
+    - **Global Canvas Alignment**: Initialized `ds.Canvas` using explicit, global `x_range` and `y_range` calculated from the full node coordinates. This forces all rasterization runs (for edges, categories, and pageview tiers) onto the identical spatial grid, resolving the `TypeError: ufunc 'over'` coordinate misalignment in `tf.stack()`.
+    - **Safe GPU Series Conversion**: Replaced raw `.values` usage on cuDF Series with safe, zero-copy `cp.asarray()` conversions across both `render_galaxy_gpu.py` and `compile_galaxy_multistage.py` to prevent `AttributeError` failures.
+    - **Fully GPU-Native Datashader Pipeline**: Removed all intermediate CPU transfers (`agg.data.get()`) from individual layers. All aggregation, shading, spreading, and stacking operations now execute entirely in VRAM using CuPy, with only a single CPU synchronization at the very end before saving. This avoids transferring 27.6GB of data over PCIe and running heavy dilation (spreading) filters on the CPU.
+    - **Anti-Hairball & Layout Stability Features**:
+        - **Attraction Floor**: Log-normalized and clamped edge weights to a maximum of `2.0` before compiling. This prevents highly active core hub links from acting as black holes that collapse communities into a central hairball.
+        - **Virtual Category Anchors**: Created 9 virtual anchor nodes (representing the semantic parent categories) that act as local community gravity wells. By linking each node to its respective category anchor, we prevent peripheral nodes from being flung out into unorganized space.
+        - **Local Blossom Phase**: Configured Phase 3 to run with `edge_weight_influence=0.0` and low gravity (`0.01`). This decouples repulsion/attraction forces from raw edge weights in the final settling stages, allowing nodes to expand locally and bloom into organic galaxy-like clusters.
 
 - **8M WebGL Visualizer Overhaul (`8m_optimized.html`):**
     - **Scale Render**: Flipped render limit from 1M to 8M nodes, validated WebGL stability under Firefox/Chrome constraints.
@@ -64,5 +72,6 @@ An isolated environment has been set up to validate the new logic before moving 
 3. Verify if the resulting `coordinates_rapids.bin` resolves the density, clumping, and artifact issues under the cohesive cosmic web parameters.
 4. Verify VFS Range Request speed and WebGL rendering of 8M nodes in `test_scrape/8m_optimized.html` locally using `log_server.py`.
 5. Import a real Wikipedia XML dump and compile it using the new `scraper/xml_parser.py` pipeline.
-6. Deploy the 35GB database to Hugging Face Datasets and host the visualizer on GitHub Pages.
+6. Optimize category labeling efficiency by training/running a FastText model directly on Wikidata categories rather than parsing heavy Wikipedia article text.
+7. Deploy the 35GB database to Hugging Face Datasets and host the visualizer on GitHub Pages.
 

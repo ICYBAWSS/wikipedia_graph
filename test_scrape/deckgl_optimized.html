@@ -975,7 +975,6 @@
                 <div class="mini-loader" id="route-loader"></div>
             </button>
             <div id="route-result-container" style="margin-top: 4px; display: none;">
-                <div class="eyebrow" style="font-size: 9px; margin-bottom: 8px; color: var(--color-lilac-haze);">Discovered Chain</div>
                 <div id="route-text-path" style="font-size: 11px; color: var(--color-ash); line-height: 1.6; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
         </div>
@@ -1688,7 +1687,7 @@
                 const queryNodes = startFrontier;
                 const placeholders = queryNodes.map(() => '?').join(',');
                 
-                const result = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholders}) OR target IN (${placeholders})`, [...queryNodes, ...queryNodes]);
+                const result = await db.exec(`SELECT source, target FROM links WHERE (source IN (${placeholders}) OR target IN (${placeholders})) AND context IS NOT NULL AND context != ""`, [...queryNodes, ...queryNodes]);
                 const rows = (result && result[0] && result[0].values) || [];
                 
                 for (const [src, tgt] of rows) {
@@ -1734,7 +1733,7 @@
                 const qNodes = endFrontier;
                 const ph = qNodes.map(() => '?').join(',');
                 
-                const res = await db.exec(`SELECT source, target FROM links WHERE source IN (${ph}) OR target IN (${ph})`, [...qNodes, ...qNodes]);
+                const res = await db.exec(`SELECT source, target FROM links WHERE (source IN (${ph}) OR target IN (${ph})) AND context IS NOT NULL AND context != ""`, [...qNodes, ...qNodes]);
                 const rRows = (res && res[0] && res[0].values) || [];
                 
                 for (const [src, tgt] of rRows) {

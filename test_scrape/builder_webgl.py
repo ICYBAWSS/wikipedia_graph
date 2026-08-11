@@ -1544,16 +1544,24 @@ def build():
             connList.innerHTML = "";
             
             const selectedLinksIndices = [];
+            const nodeIndex = parseInt(nodeId.split('_')[1]) - 1;
+
+            // Show connection loading spinner
+            connList.innerHTML = `
+              <div id="connections-loader" style="padding: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--color-ash);">
+                <div class="mini-loader" style="display: block; width: 16px; height: 16px; border-color: rgba(255,255,255,0.1); border-top-color: var(--color-lilac-haze); border-width: 2px;"></div>
+                <span>Loading connections…</span>
+              </div>`;
 
             const linksRows = await db.query(`
-                SELECT target as id, context, 'out' as type FROM links WHERE source = ? 
+                SELECT target as id, context, 'out' as type FROM links WHERE source_idx = ? 
                 UNION ALL 
-                SELECT source as id, context, 'in' as type FROM links WHERE target = ? 
+                SELECT source as id, context, 'in' as type FROM links WHERE target_idx = ? 
                 ORDER BY type DESC LIMIT ?
-            `, [nodeId, nodeId, currentDensity]) || [];
+            `, [nodeIndex, nodeIndex, currentDensity]) || [];
             if (activeQueryNodeId !== nodeId) return;
 
-            const nodeIndex = parseInt(nodeId.split('_')[1]) - 1;
+            connList.innerHTML = "";
 
             linksRows.forEach(row => {
                 const item = document.createElement("li");
@@ -1752,7 +1760,7 @@ def build():
                 const queryNodes = startFrontier;
                 const placeholders = queryNodes.map(() => '?').join(',');
                 
-                const result = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholders}) OR target IN (${placeholders})`, [...queryNodes, ...queryNodes]);
+                const result = await db.exec(`SELECT source, target FROM links WHERE (source IN (${placeholders}) OR target IN (${placeholders})) AND context IS NOT NULL AND context != ""`, [...queryNodes, ...queryNodes]);
                 const rows = (result && result[0] && result[0].values) || [];
                 for (const [src, tgt] of rows) {
                     for (const [curr, neigh] of [[src, tgt], [tgt, src]]) {
@@ -1776,7 +1784,7 @@ def build():
                 const queryNodesEnd = endFrontier;
                 const placeholdersEnd = queryNodesEnd.map(() => '?').join(',');
 
-                const resultEnd = await db.exec(`SELECT source, target FROM links WHERE source IN (${placeholdersEnd}) OR target IN (${placeholdersEnd})`, [...queryNodesEnd, ...queryNodesEnd]);
+                const resultEnd = await db.exec(`SELECT source, target FROM links WHERE (source IN (${placeholdersEnd}) OR target IN (${placeholdersEnd})) AND context IS NOT NULL AND context != ""`, [...queryNodesEnd, ...queryNodesEnd]);
                 const rowsEnd = (resultEnd && resultEnd[0] && resultEnd[0].values) || [];
                 for (const [src, tgt] of rowsEnd) {
                     for (const [curr, neigh] of [[src, tgt], [tgt, src]]) {

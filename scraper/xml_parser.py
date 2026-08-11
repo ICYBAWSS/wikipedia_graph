@@ -48,79 +48,72 @@ def clean_wikitext(text):
         text = re.sub(r'\{\{[^{}]*\}\}', '', text, flags=re.DOTALL)
     return text
 
+LINK_RE = re.compile(r'\[\[([^\]]+)\]\]')
+META_PREFIXES = ("Category:", "File:", "Image:", "Talk:", "Wikipedia:", "Portal:", "Help:", "Template:", "Special:", "MediaWiki:", "Module:")
+
+def _normalize_target(raw_target):
+    target = raw_target.split('#', 1)[0].strip()
+    if not target:
+        return None
+    # Normalize: Wikipedia titles capitalize the first letter
+    if len(target) > 1:
+        return target[0].upper() + target[1:]
+    return target.upper()
+
 def parse_wikitext_links(text):
     """
     Parses wikitext links and extracts unique destination link titles and sentence contexts.
     """
     if not text:
         return [], {}
-        
-    raw_links = re.findall(r'\[\[([^\]]+)\]\]', text)
-    links = []
-    link_targets = set()
-    
-    META_PREFIXES = ("Category:", "File:", "Image:", "Talk:", "Wikipedia:", "Portal:", "Help:", "Template:", "Special:", "MediaWiki:", "Module:")
-    
-    for l in raw_links:
-        parts = l.split('|', 1)
-        target = parts[0].strip()
-        
-        if any(target.startswith(prefix) for prefix in META_PREFIXES):
-            continue
-            
-        target = target.split('#', 1)[0].strip()
-        if not target:
-            continue
-            
-        # Normalize: Wikipedia titles capitalize the first letter
-        if len(target) > 1:
-            target = target[0].upper() + target[1:]
-        elif len(target) == 1:
-            target = target.upper()
-            
-        anchor = parts[1].strip() if len(parts) > 1 else parts[0].strip()
-        anchor = re.sub(r'\[\[|\]\]', '', anchor)
-        
-        links.append((target, anchor))
-        link_targets.add(target)
 
-    # Clean text to extract sentence context
+    # Full target list for the article, independent of context extraction: every
+    # [[...]] occurrence anywhere in the text, regardless of which sentence it's in.
+    link_targets = set()
+    for m in LINK_RE.finditer(text):
+        raw_target = m.group(1).split('|', 1)[0].strip()
+        if any(raw_target.startswith(prefix) for prefix in META_PREFIXES):
+            continue
+        target = _normalize_target(raw_target)
+        if target:
+            link_targets.add(target)
+
+    # Context extraction. Split the cleaned text into sentences with [[...]] markup
+    # still intact, then only ever pull a target's context from a sentence that
+    # contains that target's own literal [[...]] occurrence — never from some other
+    # sentence elsewhere in the article that happens to contain the same word as
+    # plain text. (The old approach stripped links to anchor text *before* splitting
+    # and then searched every sentence in the whole article for the anchor as a
+    # substring; for a common anchor like "Indian" that's shared with unrelated plain
+    # text — e.g. "...is an Indian-American businesswoman..." — it would just as
+    # happily grab a sentence that never linked anywhere, and did.)
     cleaned_text = clean_wikitext(text)
-    
-    # Replace link markup with just anchor text for clean sentence parsing
+    sentences = re.split(r'(?<=[.!?])\s+', cleaned_text)
+
     def repl(match):
-        content = match.group(1)
-        parts = content.split('|', 1)
+        parts = match.group(1).split('|', 1)
         return parts[1].strip() if len(parts) > 1 else parts[0].strip()
-        
-    cleaned_text_anchors = re.sub(r'\[\[([^\]]+)\]\]', repl, cleaned_text)
-    cleaned_text_anchors = re.sub(r"'''+|''+", "", cleaned_text_anchors)
-    
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+', cleaned_text_anchors)
+
     link_contexts = {}
-    
-    # Match sentences to links
-    for target, anchor in links:
-        if not anchor or target in link_contexts:
+    for sentence in sentences:
+        matches = list(LINK_RE.finditer(sentence))
+        if not matches:
             continue
-        for sentence in sentences:
-            if anchor in sentence:
-                clean_sentence = " ".join(sentence.split())
-                if 10 < len(clean_sentence) < 500:
-                    link_contexts[target] = clean_sentence
-                    break
-                    
-    # Fallback to matching target in sentence
-    for target, anchor in links:
-        if target in link_contexts:
+
+        display_sentence = LINK_RE.sub(repl, sentence)
+        display_sentence = re.sub(r"'''+|''+", "", display_sentence)
+        clean_sentence = " ".join(display_sentence.split())
+        if not (10 < len(clean_sentence) < 500):
             continue
-        for sentence in sentences:
-            if target in sentence:
-                clean_sentence = " ".join(sentence.split())
-                if 10 < len(clean_sentence) < 500:
-                    link_contexts[target] = clean_sentence
-                    break
+
+        for m in matches:
+            raw_target = m.group(1).split('|', 1)[0].strip()
+            if any(raw_target.startswith(prefix) for prefix in META_PREFIXES):
+                continue
+            target = _normalize_target(raw_target)
+            if not target or target in link_contexts:
+                continue
+            link_contexts[target] = clean_sentence
                     
     return list(link_targets), link_contexts
 

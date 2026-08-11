@@ -327,10 +327,19 @@ def run_crawler(max_nodes=1500, delay=0.1):
     print(f"Already crawled articles: {crawled_count} / {max_nodes}")
     
     while crawled_count < max_nodes:
+        # No priority ordering -- the goal is every article, not the popular ones
+        # first. `ORDER BY views DESC` used to pick this, but every article
+        # discovered as a link target is inserted with views hardcoded to 0 (see
+        # below), so it permanently lost that ordering to anything with a real
+        # recorded view count, no matter how heavily referenced it actually was.
+        # That starved even extremely central articles (confirmed: "United
+        # States" sat uncrawled for weeks behind far less important pages).
+        # rowid order = discovery order = FIFO, so nothing can starve behind an
+        # ever-growing set of "more popular" placeholders.
         cursor.execute("""
-            SELECT title, views FROM articles 
-            WHERE crawled = 0 
-            ORDER BY views DESC LIMIT 1
+            SELECT title, views FROM articles
+            WHERE crawled = 0
+            ORDER BY rowid ASC LIMIT 1
         """)
         row = cursor.fetchone()
         

@@ -20,7 +20,7 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
                               seed_mode='communities', layout_mode='multistage',
                               fa2_scaling=2.0, fa2_gravity=1.0, fa2_iters=1000,
                               umap_neighbors=15, umap_min_dist=0.1, umap_metric='cosine',
-                              umap_dims=128):
+                              umap_dims=128, rarity_weight=False):
     # Scale iteration counts for smoke-test runs (--iters-scale 0.2 => 20% of iterations)
     def it(n, floor=10):
         return max(floor, int(round(n * iters_scale)))
@@ -132,7 +132,29 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         del parts
         cp.get_default_memory_pool().free_all_blocks()
 
-        print(f"  Running single-pass ForceAtlas2: scaling={fa2_scaling} gravity={fa2_gravity} iters={it(fa2_iters)}...")
+        if rarity_weight:
+            # Inverse-hub (TF-IDF style) edge weighting, same physics that
+            # worked for the real gravity -- just without the two-stage
+            # compact/expand schedule that caused the uniform-puck result.
+            # Reuses full_degrees (already computed via G.degree() above)
+            # rather than a fresh bincount -- a bincount over the concatenated
+            # 373M-entry src+dst array OOM'd here on 2026-08-06 (CUB histogram
+            # tried to allocate 21GB on a 24GB GPU).
+            print("  Computing inverse-hub edge weights (TF-IDF style, 1/log(target in-degree))...")
+            dst_arr = gdf_edges['destination'].values.astype(cp.int64)
+            src_arr = gdf_edges['source'].values.astype(cp.int64)
+            indeg_counts = cp.asarray(full_degrees)
+            edge_hubness = cp.maximum(indeg_counts[src_arr], indeg_counts[dst_arr])
+            popularity_damping = 1.0 / cp.log(cp.maximum(edge_hubness, cp.float32(np.e)))
+            base_weight = cp.asarray(gdf_edges['weight'])
+            gdf_edges['weight'] = (base_weight * popularity_damping).astype(cp.float32)
+            print(f"    hub damping range: min={float(popularity_damping.min()):.4f} max={float(popularity_damping.max()):.4f}")
+            del dst_arr, src_arr, indeg_counts, edge_hubness, popularity_damping, base_weight
+            cp.get_default_memory_pool().free_all_blocks()
+            G = cugraph.Graph(directed=False)
+            G.from_cudf_edgelist(gdf_edges, source='source', destination='destination', edge_attr='weight')
+
+        print(f"  Running single-pass ForceAtlas2: scaling={fa2_scaling} gravity={fa2_gravity} rarity_weight={rarity_weight} iters={it(fa2_iters)}...")
         t0 = time.time()
         pos = cugraph.force_atlas2(
             G,
@@ -162,9 +184,16 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             if sample_frac < 1.0:
                 final_coords[orphans, :] = np.nan
             else:
-                sv = float(np.nanstd(final_coords[vv]))
-                final_coords[orphans, 0] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
-                final_coords[orphans, 1] = np.random.uniform(-sv * 3, sv * 3, len(orphans))
+                # Thin ring just outside the real layout, not a filled +-3*std
+                # square -- see the 2026-08-06 halo regression (multistage mode's
+                # equivalent fallback filled most of the visible extent once the
+                # orphan count grew with the full 6.9M-node graph).
+                real_r = np.sqrt(final_coords[vv, 0] ** 2 + final_coords[vv, 1] ** 2)
+                ring_r = float(np.percentile(real_r, 97.0))
+                theta = np.random.uniform(0.0, 2.0 * np.pi, len(orphans))
+                rr = ring_r * (1.0 + np.random.uniform(0.0, 0.15, len(orphans)))
+                final_coords[orphans, 0] = rr * np.cos(theta)
+                final_coords[orphans, 1] = rr * np.sin(theta)
 
         with open(out_bin, "wb") as f:
             f.write(struct.pack("I", num_nodes))
@@ -183,6 +212,144 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             plt.figure(figsize=(10, 10))
             plt.scatter(final_coords[idx, 0], final_coords[idx, 1], s=0.4, alpha=0.5, c='red')
             plt.title(f"Simple FA2 | scaling={fa2_scaling} gravity={fa2_gravity} sample={sample_frac}")
+            plt.savefig(diag_png, dpi=150); plt.close()
+            print(f"  [Diagnostics] saved {diag_png}")
+        except Exception as ex:
+            print(f"  [Diagnostics] warn: {ex}")
+        return
+
+    # ===================================================================
+    # TWO-STAGE BURN: TF-IDF-style inverse-hub edge weighting + a compact-then-
+    # expand physics schedule, both untried this session (user-proposed 2026-08-06).
+    #
+    # Inverse-hub weighting: plain FA2 gives every edge the same pull regardless
+    # of what it connects to, so a link to "United States" (in-degree ~250k) pulls
+    # exactly as hard as a link to some niche topic (in-degree 2). That lets a
+    # shared mega-hub drag two otherwise-unrelated articles together just because
+    # they both happen to cite it. Down-weighting by 1/log(target in-degree) (an
+    # IDF-style penalty) makes hub edges nearly inert while rare/specific edges
+    # keep full pull -- topical communities should snap together on their own
+    # links, not on shared infobox boilerplate.
+    #
+    # Two-phase schedule: a single gravity value can't do both jobs at once --
+    # near-zero gravity (needed to let clusters spread) also lets hubs escape to
+    # the rim before any local structure forms (the donut, confirmed repeatedly
+    # tonight). So compact first under strong_gravity_mode (traps hubs and their
+    # neighborhoods together while local structure forms), THEN feed those
+    # positions back in and drop to near-zero gravity -- by then the hubs are
+    # already interior, so dropping gravity just lets the now-formed local
+    # clusters push apart from each other, not escape individually to a ring.
+    # ===================================================================
+    if layout_mode == 'twostage':
+        print("=== TWO-STAGE BURN: inverse-hub weights + compact-then-expand ===")
+        print("  Louvain on full graph for community coloring...")
+        parts, mod = cugraph.louvain(G)
+        print(f"  Louvain: {int(parts['partition'].nunique())} communities, modularity {mod:.4f}")
+        node_community = np.full(num_nodes, -1, dtype=np.int32)
+        pv = parts['vertex'].to_pandas().to_numpy(dtype=np.int32)
+        pc = parts['partition'].to_pandas().to_numpy(dtype=np.int32)
+        node_community[pv] = pc
+        del parts
+        cp.get_default_memory_pool().free_all_blocks()
+
+        print("  Computing inverse-hub edge weights (TF-IDF style, 1/log(target in-degree))...")
+        dst_arr = gdf_edges['destination'].values.astype(cp.int64)
+        src_arr = gdf_edges['source'].values.astype(cp.int64)
+        # Reuse full_degrees (already computed via G.degree() above) as the
+        # hub-ness signal instead of recomputing it -- a bincount over the
+        # concatenated 373M-entry src+dst array OOM'd (CUB histogram's internal
+        # workspace tried to allocate 21GB on a 24GB GPU). full_degrees is the
+        # same "total degree, both directions" value, already sitting in host
+        # memory as a tiny (num_nodes,) array; copying it to the GPU is trivial.
+        indeg_counts = cp.asarray(full_degrees)
+        edge_hubness = cp.maximum(indeg_counts[src_arr], indeg_counts[dst_arr])  # dampen by the MORE hub-like endpoint
+        popularity_damping = 1.0 / cp.log(cp.maximum(edge_hubness, cp.float32(np.e)))  # floor at e so log>=1, no div-by-<1
+        base_weight = cp.asarray(gdf_edges['weight'])  # already log1p-clamped at line ~88
+        gdf_edges['weight'] = (base_weight * popularity_damping).astype(cp.float32)
+        print(f"    hub damping range: min={float(popularity_damping.min()):.4f} max={float(popularity_damping.max()):.4f}")
+        del dst_arr, src_arr, indeg_counts, edge_hubness, popularity_damping, base_weight
+        cp.get_default_memory_pool().free_all_blocks()
+
+        # Rebuild G with the new weight column (the module-level G above still
+        # references the old position-only weights).
+        G = cugraph.Graph(directed=False)
+        G.from_cudf_edgelist(gdf_edges, source='source', destination='destination', edge_attr='weight')
+
+        iters_p1 = it(400)
+        print(f"  Phase 1 (compact): strong_gravity_mode=True scaling={fa2_scaling} gravity={fa2_gravity} iters={iters_p1}...")
+        t0 = time.time()
+        pos1 = cugraph.force_atlas2(
+            G,
+            max_iter=iters_p1,
+            lin_log_mode=True,
+            outbound_attraction_distribution=False,
+            scaling_ratio=fa2_scaling,
+            strong_gravity_mode=True,
+            gravity=fa2_gravity,
+            edge_weight_influence=1.0,
+            prevent_overlapping=False,
+            barnes_hut_optimize=True,
+            verbose=True,
+        )
+        print(f"  Phase 1 complete in {time.time() - t0:.1f}s.")
+
+        iters_p2 = it(600)
+        expand_scaling = fa2_scaling * 1.3
+        print(f"  Phase 2 (expand): strong_gravity_mode=False gravity=0.02 scaling={expand_scaling:.2f} iters={iters_p2}...")
+        t0 = time.time()
+        pos = cugraph.force_atlas2(
+            G,
+            max_iter=iters_p2,
+            pos_list=pos1,
+            lin_log_mode=True,
+            outbound_attraction_distribution=False,
+            scaling_ratio=expand_scaling,
+            strong_gravity_mode=False,
+            gravity=0.02,
+            edge_weight_influence=1.0,
+            prevent_overlapping=False,
+            barnes_hut_optimize=True,
+            verbose=True,
+        )
+        print(f"  Phase 2 complete in {time.time() - t0:.1f}s.")
+
+        pos = pos.sort_values('vertex')
+        xs = pos['x'].to_pandas().to_numpy(dtype=np.float32)
+        ys = pos['y'].to_pandas().to_numpy(dtype=np.float32)
+        vv = pos['vertex'].to_pandas().to_numpy(dtype=np.int32)
+        final_coords = np.zeros((num_nodes, 2), dtype=np.float32)
+        final_coords[vv, 0] = xs
+        final_coords[vv, 1] = ys
+        mask = np.ones(num_nodes, dtype=bool); mask[vv] = False
+        orphans = np.where(mask)[0]
+        if len(orphans) > 0:
+            if sample_frac < 1.0:
+                final_coords[orphans, :] = np.nan
+            else:
+                real_r = np.sqrt(final_coords[vv, 0] ** 2 + final_coords[vv, 1] ** 2)
+                ring_r = float(np.percentile(real_r, 97.0))
+                theta = np.random.uniform(0.0, 2.0 * np.pi, len(orphans))
+                rr = ring_r * (1.0 + np.random.uniform(0.0, 0.15, len(orphans)))
+                final_coords[orphans, 0] = rr * np.cos(theta)
+                final_coords[orphans, 1] = rr * np.sin(theta)
+
+        with open(out_bin, "wb") as f:
+            f.write(struct.pack("I", num_nodes))
+            pd6 = np.zeros((num_nodes, 6), dtype=np.float32)
+            pd6[:, 0] = final_coords[:, 0]; pd6[:, 1] = final_coords[:, 1]
+            pd6[:, 2] = node_views; pd6[:, 3] = full_degrees
+            pd6[:, 4] = node_cats; pd6[:, 5] = node_community
+            f.write(pd6.tobytes())
+        print(f"  Wrote {out_bin} (6-col with community).")
+
+        x_std = float(np.nanstd(final_coords[:, 0])); y_std = float(np.nanstd(final_coords[:, 1]))
+        print(f"  [Diagnostics] spread std(x)={x_std:.1f} std(y)={y_std:.1f}")
+        try:
+            import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
+            idx = np.random.choice(vv, min(50000, len(vv)), replace=False)
+            plt.figure(figsize=(10, 10))
+            plt.scatter(final_coords[idx, 0], final_coords[idx, 1], s=0.4, alpha=0.5, c='red')
+            plt.title(f"Two-Stage | scaling={fa2_scaling} gravity={fa2_gravity} sample={sample_frac}")
             plt.savefig(diag_png, dpi=150); plt.close()
             print(f"  [Diagnostics] saved {diag_png}")
         except Exception as ex:
@@ -416,7 +583,7 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         outbound_attraction_distribution=P_OAD,
         scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=P_GRAV(0.2),
+        gravity=P_GRAV(0.5),  # was 0.2 -- too weak, biggest communities repelled out to a ring (donut)
         edge_weight_influence=0.4, # balanced edge weight influence
         prevent_overlapping=P_OVERLAP,
         vertex_radius=P_RADIUS(radius_gdf_backbone),
@@ -532,16 +699,26 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
     init_pos.loc[is_backbone, 'x'] = init_pos.loc[is_backbone, 'gx']
     init_pos.loc[is_backbone, 'y'] = init_pos.loc[is_backbone, 'gy']
     
-    # For unplaced nodes (isolated components, gateway == -1), scatter randomly
+    # For unplaced nodes (isolated components, gateway == -1), seed them on a thin
+    # ring just outside the backbone extent instead of filling a +-3*std SQUARE.
+    # A filled square of random inits reads as a uniform "halo" once the graph has
+    # enough peripheral/gap nodes to fail 10-hop propagation (see galaxy-layout
+    # regression, 2026-08-06: ~1.44M newly-added low-degree articles turned a
+    # previously-sparse scatter into a visibly solid block). Phase 2's FA2 still
+    # gets a chance to pull genuinely-connected unplaced nodes toward real
+    # neighbors from here; this only changes where the ones that DON'T start out.
     unplaced_mask = init_pos['gateway'] == -1
-    num_unplaced = unplaced_mask.sum()
+    num_unplaced = int(unplaced_mask.sum())
     if num_unplaced > 0:
         std_val = float(pos_backbone['x'].std()) if len(pos_backbone) > 0 else 1000.0
-        # Generate random coordinates using CuPy directly on the GPU
-        rand_x = cp.random.uniform(-std_val * 3, std_val * 3, int(num_unplaced))
-        rand_y = cp.random.uniform(-std_val * 3, std_val * 3, int(num_unplaced))
+        ring_r = std_val * 2.2
+        theta = cp.random.uniform(0.0, 2.0 * np.pi, num_unplaced)
+        rr = ring_r * (1.0 + cp.random.uniform(0.0, 0.15, num_unplaced))  # thin band, not a filled disk
+        rand_x = rr * cp.cos(theta)
+        rand_y = rr * cp.sin(theta)
         init_pos.loc[unplaced_mask, 'x'] = rand_x
         init_pos.loc[unplaced_mask, 'y'] = rand_y
+        print(f"  {num_unplaced:,} unplaced nodes seeded on a thin ring at r~{ring_r:.0f} (not a filled square).")
         
     print(f"  Initialized coordinates for {len(init_pos):,} nodes.")
     
@@ -584,7 +761,7 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             outbound_attraction_distribution=P_OAD,
             scaling_ratio=P_SCALING,
             strong_gravity_mode=False,
-            gravity=P_GRAV(0.05),
+            gravity=P_GRAV(0.3),  # was 0.05 -- too weak, let peripheral mass drift into a hollow ring
             edge_weight_influence=0.4,
             prevent_overlapping=P_OVERLAP,
             vertex_radius=P_RADIUS(radius_gdf),
@@ -621,13 +798,13 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         outbound_attraction_distribution=P_OAD,
         scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=P_GRAV(0.01),
+        gravity=P_GRAV(0.3),  # was 0.01 -- the main donut cause, nothing held the polish phase's mass in
         edge_weight_influence=ewi3, # A/B-testable: 0.4 keeps mild weight signal, 0.0 = pure topology
         prevent_overlapping=P_OVERLAP,
         vertex_radius=P_RADIUS(radius_gdf),
         verbose=True
     )
-    
+
     # Print diagnostics after Phase 3A
     x_std = float(current_pos['x'].std())
     y_std = float(current_pos['y'].std())
@@ -642,7 +819,7 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
         outbound_attraction_distribution=P_OAD,
         scaling_ratio=P_SCALING,
         strong_gravity_mode=False,
-        gravity=P_GRAV(0.01),
+        gravity=P_GRAV(0.3),  # was 0.01, matching phase 3A's fix
         edge_weight_influence=ewi3,
         prevent_overlapping=P_OVERLAP,
         vertex_radius=P_RADIUS(radius_gdf),
@@ -675,10 +852,17 @@ def compile_galaxy_multistage(edges_csv="edges_weighted.csv.gz", meta_csv="metad
             print(f"  [SMOKE TEST] Marking {len(orphans):,} unsimulated nodes as NaN (excluded from render)...")
             final_coords[orphans, :] = np.nan
         else:
-            print(f"  Scattering {len(orphans):,} degree-0 orphans as background dust...")
-            std_val = np.std(final_coords[valid_vertices])
-            final_coords[orphans, 0] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
-            final_coords[orphans, 1] = np.random.uniform(-std_val * 3, std_val * 3, len(orphans))
+            # Thin ring just outside the real layout's extent, not a filled square --
+            # a uniform square of dust across the whole extent is what caused the
+            # 2026-08-06 "halo" regression once the graph grew enough true orphans
+            # for it to read as a solid block instead of a few background stars.
+            print(f"  Scattering {len(orphans):,} degree-0 orphans on a thin outer ring...")
+            real_r = np.sqrt(final_coords[valid_vertices, 0] ** 2 + final_coords[valid_vertices, 1] ** 2)
+            ring_r = float(np.percentile(real_r, 97.0))
+            theta = np.random.uniform(0.0, 2.0 * np.pi, len(orphans))
+            rr = ring_r * (1.0 + np.random.uniform(0.0, 0.15, len(orphans)))
+            final_coords[orphans, 0] = rr * np.cos(theta)
+            final_coords[orphans, 1] = rr * np.sin(theta)
 
     # Format: [uint32 N][(float x, float y, float views, float degree, float cat_id, float community) * N]
     # Column 5 (community) is new; readers that expect 5 columns still work via
@@ -733,7 +917,7 @@ if __name__ == '__main__':
     parser.add_argument("--seed-disk", type=float, default=2.0, help="Seed disk radius scale (lower = tighter communities, less overlap)")
     parser.add_argument("--min-ring", type=float, default=0.0, help="Central-void offset added to spiral rank (higher = bigger empty center)")
     parser.add_argument("--seed-mode", type=str, default="communities", choices=["communities", "organic"], help="'communities' = disk-seed per Louvain community; 'organic' = let FA2 find natural web structure")
-    parser.add_argument("--layout", type=str, default="multistage", choices=["multistage", "simple", "umap"], help="'umap' = structural embedding (no hairball/rings); 'simple' = single-pass FA2 web; 'multistage' = 4-phase community pipeline")
+    parser.add_argument("--layout", type=str, default="multistage", choices=["multistage", "simple", "twostage", "umap"], help="'umap' = structural embedding (no hairball/rings); 'simple' = single-pass FA2 web; 'twostage' = inverse-hub weighting + compact-then-expand; 'multistage' = 4-phase community pipeline")
     parser.add_argument("--fa2-scaling", type=float, default=2.0, help="[simple] FA2 scaling_ratio (lower = tighter clusters)")
     parser.add_argument("--fa2-gravity", type=float, default=1.0, help="[simple] FA2 gravity (higher = tighter overall)")
     parser.add_argument("--fa2-iters", type=int, default=1000, help="[simple] FA2 iterations")
@@ -741,6 +925,7 @@ if __name__ == '__main__':
     parser.add_argument("--umap-min-dist", type=float, default=0.1, help="[umap] min_dist spacing floor (higher = more even spread, kills hub collapse)")
     parser.add_argument("--umap-metric", type=str, default="cosine", help="[umap] (unused: diffusion embedding uses euclidean on L2-normalized rows)")
     parser.add_argument("--umap-dims", type=int, default=128, help="[umap] diffusion embedding dimensionality fed to UMAP")
+    parser.add_argument("--rarity-weight", action="store_true", help="[simple] inverse-hub (TF-IDF style) edge weighting: 1/log(target in-degree), no two-stage schedule")
     args = parser.parse_args()
 
     compile_galaxy_multistage(
@@ -751,5 +936,5 @@ if __name__ == '__main__':
         seed_mode=args.seed_mode, layout_mode=args.layout,
         fa2_scaling=args.fa2_scaling, fa2_gravity=args.fa2_gravity, fa2_iters=args.fa2_iters,
         umap_neighbors=args.umap_neighbors, umap_min_dist=args.umap_min_dist, umap_metric=args.umap_metric,
-        umap_dims=args.umap_dims
+        umap_dims=args.umap_dims, rarity_weight=args.rarity_weight
     )
