@@ -24,3 +24,6 @@ You must have Python and the following packages installed:
 
 ### IMPORTANT NOTE
 The script provided previously was a conceptual blueprint. Due to the scope of 'all of Wikipedia', the ingestion phase (Phase 3) is highly complex. Start with small batches (e.g., processing 100 pages) and verify the extraction logic before attempting full-scale runs.
+
+---
+*Note: This repository features a high-performance interactive WebGL/Deck.gl layout visualizer for Wikipedia articles.*
