@@ -1055,8 +1055,7 @@ async function initWordCatchGame() {
         } else if (w.real) {
           score++; caughtReal++; flash = 10; flashColor = '#748c69'; // --color-philosophy, doubles as "correct"
           $('wc-score').textContent = `Score ${score}`;
-          if (caughtReal >= 1 && !topicChanged) {
-            nextTopic();
+          if (caughtReal >= 1) {
             topicChanged = true;
           }
         } else {
@@ -1071,6 +1070,10 @@ async function initWordCatchGame() {
       ctx.fillText(w.text, w.x, w.y);
       return true;
     });
+
+    if (topicChanged) {
+      nextTopic();
+    }
 
     ctx.fillStyle = flash > 0 ? flashColor : '#d6d2ca';
     if (flash > 0) flash--;
