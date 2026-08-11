@@ -2134,12 +2134,7 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
 // the same {onEndpoints, onProgress} contract.
 const PATHFINDER_ALGOS = {
   bidirectional: { label: 'Bidirectional BFS', run: runBidirectionalBFS },
-  bfs: { label: 'BFS', run: runSimpleBFS },
-  dfs: { label: 'DFS', run: runSimpleDFS },
-  astar: { label: 'A*', run: runAStarPathfinder },
-  greedy: { label: 'Greedy Best-First', run: runGreedyBestFirst },
-  dijkstra: { label: 'Dijkstra', run: runDijkstraWeighted },
-  randomwalk: { label: 'Random Walk', run: runRandomWalk }
+  greedy: { label: 'Greedy Best-First', run: runGreedyBestFirst }
 };
 
 function showRouteTiming(text) {
