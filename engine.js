@@ -967,31 +967,41 @@ async function initWordCatchGame() {
 
   function spawn() {
     if (words.length >= MAX_CONCURRENT) return;
-    // 60% chance to spawn a correct (real) word, 40% chance for a decoy.
-    const spawnReal = Math.random() < 0.6;
-    const t = topics[topicIdx];
-    let itemText, itemReal;
-    if (spawnReal) {
-      if (!realQueue.length) realQueue = shuffled(t.real);
-      itemText = realQueue.pop();
-      itemReal = true;
-    } else {
-      if (!decoyQueue.length) decoyQueue = shuffled(t.decoys);
-      itemText = decoyQueue.pop();
+    
+    const isHeart = lives < 3 && Math.random() < 0.15;
+    let itemText, itemReal, itemColor;
+    if (isHeart) {
+      itemText = '♥';
       itemReal = false;
+      itemColor = [255, 80, 80]; // bright red/pink
+    } else {
+      // 60% chance to spawn a correct (real) word, 40% chance for a decoy.
+      const spawnReal = Math.random() < 0.6;
+      const t = topics[topicIdx];
+      if (spawnReal) {
+        if (!realQueue.length) realQueue = shuffled(t.real);
+        itemText = realQueue.pop();
+        itemReal = true;
+      } else {
+        if (!decoyQueue.length) decoyQueue = shuffled(t.decoys);
+        itemText = decoyQueue.pop();
+        itemReal = false;
+      }
+      itemColor = CAT[Math.floor(Math.random() * CAT.length)];
     }
+    
     ctx.font = WORD_FONT;
     const halfW = ctx.measureText(itemText).width / 2 + 6;
     // Clamp so the full word -- long titles included -- always renders inside
     // the canvas and inside a reachable bucket position, instead of a fixed
     // x range that ignores how wide the text actually is.
     const x = clamp(20 + Math.random() * (W - 40), halfW, W - halfW);
-    const speedMultiplier = 1.5 + score * 0.05;
+    const speedMultiplier = (1.5 + score * 0.05) * 1.5;
     words.push({
-      text: itemText, real: itemReal, halfW,
+      text: itemText, real: itemReal, isHeart, halfW,
       x, y: -12,
       vy: (0.35 + Math.random() * 0.3) * speedMultiplier,
-      color: CAT[Math.floor(Math.random() * CAT.length)]
+      color: itemColor
     });
   }
 
@@ -1016,12 +1026,12 @@ async function initWordCatchGame() {
 
   function frame() {
     if (!running) return;
-    if (keys['ArrowLeft']) bucket.x = clamp(bucket.x - 5, 0, W - bucket.w);
-    if (keys['ArrowRight']) bucket.x = clamp(bucket.x + 5, 0, W - bucket.w);
+    if (keys['ArrowLeft']) bucket.x = clamp(bucket.x - 7.5, 0, W - bucket.w);
+    if (keys['ArrowRight']) bucket.x = clamp(bucket.x + 7.5, 0, W - bucket.w);
 
     spawnTimer++;
-    const speedMultiplier = 1.5 + score * 0.05;
-    const spawnThreshold = Math.max(25, Math.round(70 / speedMultiplier));
+    const speedMultiplier = (1.5 + score * 0.05) * 1.5;
+    const spawnThreshold = Math.max(16, Math.round(70 / speedMultiplier));
     if (spawnTimer > spawnThreshold) { spawnTimer = 0; spawn(); }
 
     ctx.clearRect(0, 0, W, H);
@@ -1038,7 +1048,11 @@ async function initWordCatchGame() {
       const caught = w.y >= bucket.y - 6 && w.y <= bucket.y + bucket.h &&
         w.x + w.halfW > bucket.x && w.x - w.halfW < bucket.x + bucket.w;
       if (caught) {
-        if (w.real) {
+        if (w.isHeart) {
+          lives = Math.min(3, lives + 1);
+          flash = 10; flashColor = '#ff5050'; // Red/pink flash for heart catch
+          $('wc-lives').textContent = '♥'.repeat(Math.max(lives, 0)) + '♡'.repeat(3 - Math.max(lives, 0));
+        } else if (w.real) {
           score++; caughtReal++; flash = 10; flashColor = '#748c69'; // --color-philosophy, doubles as "correct"
           $('wc-score').textContent = `Score ${score}`;
           if (caughtReal >= 1 && !topicChanged) {
