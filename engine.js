@@ -278,7 +278,26 @@ let csrOffsetsRev = null, csrNeighborsRev = null; // IN-edges (adjacency_csr_rev
 // density/distance/strength, charge, collision, gravity — were force-simulation
 // parameters from a pre-rewrite version of this app; this engine has no physics
 // simulation at all, it's a static precomputed layout, so none of them did anything.)
-let nodeBudget = 90000;       // how many nodes cull() draws per frame, ≤ BUDGET
+let nodeBudget = 10000;       // how many nodes cull() draws per frame, ≤ BUDGET (dynamically configured below)
+(function detectDefaultBudget() {
+  const isMobile = typeof navigator !== 'undefined' && (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (typeof window !== 'undefined' && window.innerWidth <= 768));
+  if (isMobile) {
+    nodeBudget = 10000; // strictly 10k for mobile to prevent OOM / lag
+    return;
+  }
+  if (typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number') {
+    if (navigator.deviceMemory >= 8) {
+      nodeBudget = 90000;
+    } else if (navigator.deviceMemory >= 4) {
+      nodeBudget = 40000;
+    } else {
+      nodeBudget = 15000;
+    }
+  } else {
+    // If we cannot detect device memory (Safari/Firefox), use a safe default of 30k
+    nodeBudget = 30000;
+  }
+})();
 let nodeSizeScale = 1.0;      // multiplies radiusMinPixels/radiusMaxPixels
 let edgeOpacity = 1.0;        // multiplies the background hairline edge layer's alpha
 let dimAlpha = 22;            // alpha used for off-route / unconnected "dimmed" nodes
@@ -666,19 +685,38 @@ if(sbb) {
   const redraw = () => window.__wg && window.__wg.cull();
 
   const hideToggle = $('hide-nodes-toggle');
-  if (hideToggle) hideToggle.onchange = () => { hideAllNodes = hideToggle.checked; redraw(); };
+  if (hideToggle) {
+    hideToggle.checked = hideAllNodes;
+    hideToggle.onchange = () => { hideAllNodes = hideToggle.checked; redraw(); };
+  }
 
   const sizeSlider = $('slider-node-size'), sizeVal = $('node-size-val');
-  if (sizeSlider) sizeSlider.oninput = () => { nodeSizeScale = parseFloat(sizeSlider.value); if (sizeVal) sizeVal.textContent = nodeSizeScale.toFixed(1); redraw(); };
+  if (sizeSlider) {
+    sizeSlider.value = nodeSizeScale;
+    if (sizeVal) sizeVal.textContent = nodeSizeScale.toFixed(1);
+    sizeSlider.oninput = () => { nodeSizeScale = parseFloat(sizeSlider.value); if (sizeVal) sizeVal.textContent = nodeSizeScale.toFixed(1); redraw(); };
+  }
 
   const budgetSlider = $('slider-node-budget'), budgetVal = $('node-budget-val');
-  if (budgetSlider) budgetSlider.oninput = () => { nodeBudget = Math.min(parseInt(budgetSlider.value, 10), BUDGET); if (budgetVal) budgetVal.textContent = nodeBudget.toLocaleString(); redraw(); };
+  if (budgetSlider) {
+    budgetSlider.value = nodeBudget;
+    if (budgetVal) budgetVal.textContent = nodeBudget.toLocaleString();
+    budgetSlider.oninput = () => { nodeBudget = Math.min(parseInt(budgetSlider.value, 10), BUDGET); if (budgetVal) budgetVal.textContent = nodeBudget.toLocaleString(); redraw(); };
+  }
 
   const edgeSlider = $('slider-edge-opacity'), edgeVal = $('edge-opacity-val');
-  if (edgeSlider) edgeSlider.oninput = () => { edgeOpacity = parseFloat(edgeSlider.value); if (edgeVal) edgeVal.textContent = edgeOpacity.toFixed(1); redraw(); };
+  if (edgeSlider) {
+    edgeSlider.value = edgeOpacity;
+    if (edgeVal) edgeVal.textContent = edgeOpacity.toFixed(1);
+    edgeSlider.oninput = () => { edgeOpacity = parseFloat(edgeSlider.value); if (edgeVal) edgeVal.textContent = edgeOpacity.toFixed(1); redraw(); };
+  }
 
   const dimSlider = $('slider-dim-alpha'), dimVal = $('dim-alpha-val');
-  if (dimSlider) dimSlider.oninput = () => { dimAlpha = parseInt(dimSlider.value, 10); if (dimVal) dimVal.textContent = dimAlpha; redraw(); };
+  if (dimSlider) {
+    dimSlider.value = dimAlpha;
+    if (dimVal) dimVal.textContent = dimAlpha;
+    dimSlider.oninput = () => { dimAlpha = parseInt(dimSlider.value, 10); if (dimVal) dimVal.textContent = dimAlpha; redraw(); };
+  }
 })();
 
 // Load Coordinate Binaries and Connect SQLite VFS
