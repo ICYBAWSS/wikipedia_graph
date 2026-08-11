@@ -968,7 +968,7 @@ async function initWordCatchGame() {
   function spawn() {
     if (words.length >= MAX_CONCURRENT) return;
     
-    const isHeart = lives < 3 && Math.random() < 0.15;
+    const isHeart = lives < 3 && Math.random() < 0.30;
     let itemText, itemReal, itemColor;
     if (isHeart) {
       itemText = '♥';
