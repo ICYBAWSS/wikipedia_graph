@@ -139,9 +139,9 @@ def compile_graph():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Select all crawled articles including new Wikidata fields
+    # Select all crawled articles including link_contexts
     cursor.execute("""
-        SELECT title, snippet, views, categories, links, wikidata_type 
+        SELECT title, snippet, views, categories, links, link_contexts, wikidata_type 
         FROM articles 
         WHERE crawled = 1 AND snippet IS NOT NULL
     """)
@@ -152,17 +152,23 @@ def compile_graph():
     
     # Store article details
     articles_data = {}
-    for title, snippet, views, categories, links, wd_type in rows:
+    for title, snippet, views, categories, links, link_contexts, wd_type in rows:
         try:
             links_list = json.loads(links) if links else []
         except Exception:
             links_list = []
+            
+        try:
+            contexts_map = json.loads(link_contexts) if link_contexts else {}
+        except Exception:
+            contexts_map = {}
             
         articles_data[title] = {
             "snippet": snippet,
             "views": views or 0,
             "categories": categories,
             "links": links_list,
+            "link_contexts": contexts_map,
             "wd_type": wd_type
         }
         
@@ -176,10 +182,16 @@ def compile_graph():
     for source, info in articles_data.items():
         for target in info["links"]:
             if target in valid_titles:
-                link_key = tuple(sorted([source, target]))
+                # We use a directed link key if we want to store context per direction
+                link_key = (source, target)
                 if link_key not in seen_links:
                     seen_links.add(link_key)
-                    links_json.append({"source": source, "target": target})
+                    context = info["link_contexts"].get(target, "")
+                    links_json.append({
+                        "source": source, 
+                        "target": target, 
+                        "context": context
+                    })
     
     in_degrees = {title: 0 for title in valid_titles}
     out_degrees = {title: 0 for title in valid_titles}
@@ -233,7 +245,8 @@ def compile_graph():
     cursor.execute("""
         CREATE TABLE links (
             source TEXT,
-            target TEXT
+            target TEXT,
+            context TEXT
         )
     """)
     
@@ -248,10 +261,10 @@ def compile_graph():
     
     # Insert link connections
     cursor.executemany("""
-        INSERT INTO links (source, target)
-        VALUES (?, ?)
+        INSERT INTO links (source, target, context)
+        VALUES (?, ?, ?)
     """, [
-        (l["source"], l["target"])
+        (l["source"], l["target"], l["context"])
         for l in links_json
     ])
     
@@ -268,6 +281,7 @@ def compile_graph():
     print("Compiled database successfully!")
     print(f"Total Nodes: {len(nodes_json)}")
     print(f"Total Links: {len(links_json)}")
+
 
 def run_spring_layout(nodes, links, iterations=80, k=None):
     """

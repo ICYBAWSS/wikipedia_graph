@@ -150,11 +150,16 @@ def fetch_top_seeds():
         print(f"Exception during Pageviews fetch: {e}")
         return []
 
+from bs4 import BeautifulSoup
+import re
+
 def get_article_details_api(title):
     """
     Fetches snippet, categories, and 30-day views for an article.
-    Also paginates to retrieve ALL outbound links in namespace 0 (articles).
+    Also paginates to retrieve ALL outbound links in namespace 0 (articles)
+    and extracts the sentence context for each link.
     """
+    # 1. Fetch metadata (snippet, categories, views)
     meta_params = {
         "action": "query",
         "titles": title,
@@ -187,64 +192,116 @@ def get_article_details_api(title):
         print(f"Error fetching metadata for {title}: {e}")
         return None
 
-    links = []
-    links_params = {
-        "action": "query",
-        "titles": title,
-        "prop": "links",
-        "plnamespace": 0,
-        "pllimit": "max",
+    # 2. Fetch HTML to extract link contexts
+    # We use action=parse to get the HTML of the first few sections or full page
+    parse_params = {
+        "action": "parse",
+        "page": title,
+        "prop": "text",
         "redirects": 1,
         "format": "json"
     }
     
-    plcontinue = None
-    while True:
-        current_params = links_params.copy()
-        if plcontinue:
-            current_params["plcontinue"] = plcontinue
-            
-        try:
-            r = requests.get(WIKI_API_URL, params=current_params, headers=HEADERS, timeout=10)
-            if r.status_code != 200:
-                print(f"Error fetching links for {title}: HTTP {r.status_code}")
-                break
-                
+    link_contexts = {}
+    links = []
+    
+    try:
+        r = requests.get(WIKI_API_URL, params=parse_params, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
             data = r.json()
-            pages = data.get("query", {}).get("pages", {})
-            for page_id, page_info in pages.items():
-                for link in page_info.get("links", []):
-                    link_title = link["title"]
-                    if not any(link_title.startswith(prefix) for prefix in META_PREFIXES):
-                        links.append(link_title)
-            
-            plcontinue = data.get("continue", {}).get("plcontinue")
-            if not plcontinue:
-                break
-        except Exception as e:
-            print(f"Error querying links loop for {title}: {e}")
-            break
+            html_content = data.get("parse", {}).get("text", {}).get("*", "")
+            if html_content:
+                soup = BeautifulSoup(html_content, "html.parser")
+                # Find all links in the main content area (p, li, etc.)
+                for p in soup.find_all(["p", "li"]):
+                    text = p.get_text()
+                    # Split into sentences (rough approximation)
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    
+                    for a in p.find_all("a", href=True):
+                        # Internal wiki links look like /wiki/Title
+                        href = a["href"]
+                        if href.startswith("/wiki/") and ":" not in href:
+                            link_title = href.replace("/wiki/", "").replace("_", " ")
+                            link_title = requests.utils.unquote(link_title)
+                            
+                            # Find which sentence contains this link's anchor text
+                            anchor_text = a.get_text()
+                            for sentence in sentences:
+                                if anchor_text in sentence:
+                                    # Clean up sentence (remove multiple spaces, etc.)
+                                    clean_sentence = " ".join(sentence.split())
+                                    if len(clean_sentence) > 10 and len(clean_sentence) < 500:
+                                        link_contexts[link_title] = clean_sentence
+                                        break
+                
+                links = list(link_contexts.keys())
+    except Exception as e:
+        print(f"Error fetching HTML/parsing links for {title}: {e}")
+
+    # Fallback to prop=links if no links found via parse (unlikely for valid articles)
+    if not links:
+        links_params = {
+            "action": "query",
+            "titles": title,
+            "prop": "links",
+            "plnamespace": 0,
+            "pllimit": "max",
+            "redirects": 1,
+            "format": "json"
+        }
+        
+        plcontinue = None
+        while True:
+            current_params = links_params.copy()
+            if plcontinue:
+                current_params["plcontinue"] = plcontinue
+                
+            try:
+                r = requests.get(WIKI_API_URL, params=current_params, headers=HEADERS, timeout=10)
+                if r.status_code != 200: break
+                    
+                data = r.json()
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_info in pages.items():
+                    for link in page_info.get("links", []):
+                        link_title = link["title"]
+                        if not any(link_title.startswith(prefix) for prefix in META_PREFIXES):
+                            links.append(link_title)
+                
+                plcontinue = data.get("continue", {}).get("plcontinue")
+                if not plcontinue: break
+            except Exception: break
             
     return {
         "title": title,
         "snippet": snippet,
         "views": views_30d,
         "categories": categories,
-        "links": list(set(links))
+        "links": list(set(links)),
+        "link_contexts": link_contexts
     }
 
 def run_crawler(max_nodes=1500, delay=0.1):
     """
     Main crawl loop.
     1. Check if we have seeds in the database. If not, fetch and insert.
-    2. Repeatedly pick the uncrawled article with the highest pageviews.
-    3. Crawl details and outbound links.
+    2. Pick the uncrawled article with the highest pageviews.
+    3. Crawl details, outbound links, and contexts.
     4. Insert/update database.
     """
     init_db()
     
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # Check if we need to add the link_contexts column
+    try:
+        cursor.execute("SELECT link_contexts FROM articles LIMIT 1")
+    except sqlite3.OperationalError:
+        print("Updating database schema: adding link_contexts column...")
+        cursor.execute("ALTER TABLE articles ADD COLUMN link_contexts TEXT")
+        conn.commit()
     
     cursor.execute("SELECT COUNT(*) FROM articles")
     count = cursor.fetchone()[0]
@@ -270,10 +327,19 @@ def run_crawler(max_nodes=1500, delay=0.1):
     print(f"Already crawled articles: {crawled_count} / {max_nodes}")
     
     while crawled_count < max_nodes:
+        # No priority ordering -- the goal is every article, not the popular ones
+        # first. `ORDER BY views DESC` used to pick this, but every article
+        # discovered as a link target is inserted with views hardcoded to 0 (see
+        # below), so it permanently lost that ordering to anything with a real
+        # recorded view count, no matter how heavily referenced it actually was.
+        # That starved even extremely central articles (confirmed: "United
+        # States" sat uncrawled for weeks behind far less important pages).
+        # rowid order = discovery order = FIFO, so nothing can starve behind an
+        # ever-growing set of "more popular" placeholders.
         cursor.execute("""
-            SELECT title, views FROM articles 
-            WHERE crawled = 0 
-            ORDER BY views DESC LIMIT 1
+            SELECT title, views FROM articles
+            WHERE crawled = 0
+            ORDER BY rowid ASC LIMIT 1
         """)
         row = cursor.fetchone()
         
@@ -289,7 +355,7 @@ def run_crawler(max_nodes=1500, delay=0.1):
         if details is None:
             cursor.execute("""
                 UPDATE articles 
-                SET crawled = 1, snippet = NULL, categories = NULL, links = NULL
+                SET crawled = 1, snippet = NULL, categories = NULL, links = NULL, link_contexts = NULL
                 WHERE title = ?
             """, (title,))
             conn.commit()
@@ -297,13 +363,12 @@ def run_crawler(max_nodes=1500, delay=0.1):
             crawled_count += 1
             continue
             
-        # NEW: Fetch official Wikidata Type
         wd_id, wd_type = get_wikidata_type(title)
         
         cursor.execute("""
             UPDATE articles 
             SET snippet = ?, views = ?, categories = ?, links = ?, 
-                wikidata_id = ?, wikidata_type = ?,
+                link_contexts = ?, wikidata_id = ?, wikidata_type = ?,
                 crawled = 1, last_updated = CURRENT_TIMESTAMP
             WHERE title = ?
         """, (
@@ -311,6 +376,7 @@ def run_crawler(max_nodes=1500, delay=0.1):
             details["views"] if details["views"] > 0 else views,
             json.dumps(details["categories"]),
             json.dumps(details["links"]),
+            json.dumps(details["link_contexts"]),
             wd_id,
             wd_type,
             title
@@ -329,6 +395,7 @@ def run_crawler(max_nodes=1500, delay=0.1):
         
     conn.close()
     print("Crawl session finished!")
+
 
 if __name__ == "__main__":
     import sys

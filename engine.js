@@ -828,6 +828,198 @@ async function startVisualization() {
 // Start visualizer setup
 startVisualization().catch(e=>console.error("Visualizer initialization failed:", e));
 
+// ── Loading-screen minigame ─────────────────────────────────────────────────
+// Catch words that are really linked from the topic shown, dodge the ones that
+// aren't. Answer key (word_catch_data.json) is precomputed offline from the
+// same DB the CSR is built from -- see build_word_catch_data.py -- so this
+// works immediately and never waits on the CSR/DB the rest of the site needs.
+// Stays opt-in behind the "Play a game while you wait?" button rather than
+// starting automatically -- most visits are short enough not to want it, and
+// this also defers the (tiny, but non-zero) data fetch until someone actually
+// asks for it. Runs independently of startVisualization() and keeps going
+// past load completion: the loading screen no longer auto-dismisses (see the
+// loadingReady/showContinueButton wiring near fit(), below) -- a Continue
+// button appears instead so a mid-round player isn't yanked out.
+(function wireWordCatchStartButton() {
+  const btn = $('wc-start-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    btn.style.display = 'none';
+    initWordCatchGame().catch(e => console.error('word-catch init failed:', e));
+  }, { once: true });
+})();
+
+async function initWordCatchGame() {
+  const wrap = $('word-catch'), canvas = $('wc-canvas');
+  if (!wrap || !canvas) return;
+  const res = await fetch(`word_catch_data.json?v=${V}`);
+  if (!res.ok) return;
+  let topics = shuffled(await res.json());
+  if (!topics.length) return;
+
+  wrap.style.display = 'flex';
+  // Canvas backing store at devicePixelRatio, logical game/text coordinates
+  // stay at the CSS size (W/H below) -- without this the falling text is
+  // upscaled from a 1x buffer and reads as blurry on any hi-DPI screen.
+  const W = canvas.width, H = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const bucket = { w: 54, h: 12, x: (W - 54) / 2, y: H - 20 };
+  let words = [], score = 0, lives = 3, topicIdx = -1, realQueue = [], decoyQueue = [], caughtReal = 0, spawnTimer = 0, flash = 0, flashColor = '#e8b840', running = true;
+
+  function shuffled(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function nextTopic() {
+    topicIdx++;
+    if (topicIdx >= topics.length) {
+      const lastTopic = topics[topics.length - 1];
+      let newTopics = shuffled(topics);
+      while (newTopics[0] === lastTopic && topics.length > 1) {
+        newTopics = shuffled(topics);
+      }
+      topics = newTopics;
+      topicIdx = 0;
+    }
+    const t = topics[topicIdx];
+    $('wc-topic').textContent = t.topic;
+    realQueue = shuffled(t.real);
+    decoyQueue = shuffled(t.decoys);
+    caughtReal = 0;
+    words = []; // Clear existing falling words to start fresh with the new topic
+  }
+  nextTopic();
+
+  function resetCurrentTopic() {
+    if (topicIdx < 0 || topicIdx >= topics.length) return;
+    const t = topics[topicIdx];
+    realQueue = shuffled(t.real);
+    decoyQueue = shuffled(t.decoys);
+    caughtReal = 0;
+    words = [];
+  }
+
+  const WORD_FONT = '12px Inter, sans-serif';
+  const MAX_CONCURRENT = 3;
+
+  function spawn() {
+    if (words.length >= MAX_CONCURRENT) return;
+    // 60% chance to spawn a correct (real) word, 40% chance for a decoy.
+    const spawnReal = Math.random() < 0.6;
+    const t = topics[topicIdx];
+    let itemText, itemReal;
+    if (spawnReal) {
+      if (!realQueue.length) realQueue = shuffled(t.real);
+      itemText = realQueue.pop();
+      itemReal = true;
+    } else {
+      if (!decoyQueue.length) decoyQueue = shuffled(t.decoys);
+      itemText = decoyQueue.pop();
+      itemReal = false;
+    }
+    ctx.font = WORD_FONT;
+    const halfW = ctx.measureText(itemText).width / 2 + 6;
+    // Clamp so the full word -- long titles included -- always renders inside
+    // the canvas and inside a reachable bucket position, instead of a fixed
+    // x range that ignores how wide the text actually is.
+    const x = clamp(20 + Math.random() * (W - 40), halfW, W - halfW);
+    const speedMultiplier = 1.5 + score * 0.05;
+    words.push({
+      text: itemText, real: itemReal, halfW,
+      x, y: -12,
+      vy: (0.35 + Math.random() * 0.3) * speedMultiplier,
+      color: CAT[Math.floor(Math.random() * CAT.length)]
+    });
+  }
+
+  const keys = {};
+  window.addEventListener('keydown', e => { keys[e.code] = true; });
+  window.addEventListener('keyup', e => { keys[e.code] = false; });
+  canvas.addEventListener('pointermove', e => {
+    const r = canvas.getBoundingClientRect();
+    bucket.x = clamp((e.clientX - r.left) * (W / r.width) - bucket.w / 2, 0, W - bucket.w);
+  });
+
+  function loseLife() {
+    lives--; flash = 12; flashColor = '#d35849'; // --color-history, doubles as "wrong"
+    $('wc-lives').textContent = '♥'.repeat(Math.max(lives, 0)) + '♡'.repeat(3 - Math.max(lives, 0));
+    if (lives <= 0) { lives = 3; score = 0; $('wc-score').textContent = 'Score 0'; resetCurrentTopic(); }
+  }
+
+  function frame() {
+    if (!running) return;
+    if (keys['ArrowLeft']) bucket.x = clamp(bucket.x - 5, 0, W - bucket.w);
+    if (keys['ArrowRight']) bucket.x = clamp(bucket.x + 5, 0, W - bucket.w);
+
+    spawnTimer++;
+    const speedMultiplier = 1.5 + score * 0.05;
+    const spawnThreshold = Math.max(25, Math.round(70 / speedMultiplier));
+    if (spawnTimer > spawnThreshold) { spawnTimer = 0; spawn(); }
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = '#36322b';
+    ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
+
+    let topicChanged = false;
+    words = words.filter(w => {
+      w.y += w.vy;
+      // Overlap uses the word's actual rendered half-width (see spawn()) so a
+      // long title can't visually cover the bucket without it counting as a
+      // real hit -- and, more importantly, can't clip an *adjacent* word's
+      // hitbox into the bucket's path when both are on screen at once.
+      const caught = w.y >= bucket.y - 6 && w.y <= bucket.y + bucket.h &&
+        w.x + w.halfW > bucket.x && w.x - w.halfW < bucket.x + bucket.w;
+      if (caught) {
+        if (w.real) {
+          score++; caughtReal++; flash = 10; flashColor = '#748c69'; // --color-philosophy, doubles as "correct"
+          $('wc-score').textContent = `Score ${score}`;
+          if (caughtReal >= 1 && !topicChanged) {
+            nextTopic();
+            topicChanged = true;
+          }
+        } else {
+          loseLife();
+        }
+        return false;
+      }
+      if (w.y > H + 12) return false;
+      ctx.font = WORD_FONT;
+      ctx.fillStyle = `rgb(${w.color[0]},${w.color[1]},${w.color[2]})`;
+      ctx.textAlign = 'center';
+      ctx.fillText(w.text, w.x, w.y);
+      return true;
+    });
+
+    ctx.fillStyle = flash > 0 ? flashColor : '#d6d2ca';
+    if (flash > 0) flash--;
+    const r = 4;
+    ctx.beginPath();
+    ctx.moveTo(bucket.x + r, bucket.y);
+    ctx.arcTo(bucket.x + bucket.w, bucket.y, bucket.x + bucket.w, bucket.y + bucket.h, r);
+    ctx.arcTo(bucket.x + bucket.w, bucket.y + bucket.h, bucket.x, bucket.y + bucket.h, r);
+    ctx.arcTo(bucket.x, bucket.y + bucket.h, bucket.x, bucket.y, r);
+    ctx.arcTo(bucket.x, bucket.y, bucket.x + bucket.w, bucket.y, r);
+    ctx.closePath();
+    ctx.fill();
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  window.__wordCatchStop = () => { running = false; };
+}
+
 function setupSearch(N, px, py) {
   const searchBox = $('search-box');
   const datalist = $('article-list');
@@ -2220,7 +2412,19 @@ function cull(vs){
       const diameter = -minx * 2;
       const margin = 1.08; // small breathing room so the outermost nodes aren't flush against the edge
       VS={target:[0,0,0],zoom:Math.log2(Math.min(w,h)/(diameter*margin))}; deckgl.setProps({viewState:VS}); cull(VS);
-      const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
+      // Data is ready, but don't yank the loading screen away out from under the
+      // word-catch minigame (see initWordCatchGame) -- reveal a Continue button
+      // instead and let dismissal be the user's call, whenever they're done.
+      const btn=$('loading-continue-btn');
+      if(btn){
+        btn.style.display='inline-flex';
+        btn.onclick=()=>{
+          if(window.__wordCatchStop) window.__wordCatchStop();
+          const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
+        };
+      } else {
+        const ls=$('loading-screen'); if(ls){ ls.style.transition='opacity .5s'; ls.style.opacity='0'; setTimeout(()=>ls.style.display='none',500); }
+      }
     } else requestAnimationFrame(fit); })();
 
   // Build the title search index after the page is already interactive — sorting
