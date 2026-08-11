@@ -599,7 +599,31 @@ const EYE_CLOSED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 
 // Setup panels collapsible toggles
 [['header-toggle','header-panel'],['legend-toggle','legend-panel'],['controls-toggle','controls-panel'],['stats-toggle','stats-panel']]
-  .forEach(([b,p])=>{ const bt=$(b),pn=$(p); if(bt&&pn) bt.onclick=()=>{ pn.classList.toggle('collapsed'); bt.classList.toggle('active'); }; });
+  .forEach(([b,p], idx, arr)=>{
+    const bt=$(b),pn=$(p);
+    if(bt&&pn) {
+      bt.onclick=()=>{
+        const isMobile = window.innerWidth <= 768;
+        if (isMobile && pn.classList.contains('collapsed')) {
+          // Collapse other active panels first
+          arr.forEach(([ob, op]) => {
+            if (op !== p) {
+              const opt = $(ob), opn = $(op);
+              if (opt && opn) {
+                opn.classList.add('collapsed');
+                opt.classList.remove('active');
+              }
+            }
+          });
+          // Also hide detail sidebar when opening a panel on mobile
+          const sidebar = $('detail-sidebar');
+          if (sidebar) sidebar.classList.remove('active');
+        }
+        pn.classList.toggle('collapsed');
+        bt.classList.toggle('active');
+      };
+    }
+  });
 
 // Close detail sidebar
 // cull() is a closure local to run(), not in scope here — go through window.__wg
@@ -946,6 +970,11 @@ async function initWordCatchGame() {
   const keys = {};
   window.addEventListener('keydown', e => { keys[e.code] = true; });
   window.addEventListener('keyup', e => { keys[e.code] = false; });
+  canvas.addEventListener('pointerdown', e => {
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    const r = canvas.getBoundingClientRect();
+    bucket.x = clamp((e.clientX - r.left) * (W / r.width) - bucket.w / 2, 0, W - bucket.w);
+  });
   canvas.addEventListener('pointermove', e => {
     const r = canvas.getBoundingClientRect();
     bucket.x = clamp((e.clientX - r.left) * (W / r.width) - bucket.w / 2, 0, W - bucket.w);
@@ -1021,37 +1050,74 @@ async function initWordCatchGame() {
 }
 
 function setupSearch(N, px, py) {
-  const searchBox = $('search-box');
-  const datalist = $('article-list');
-  if (searchBox && datalist) {
-    const escapeAttr = s => s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const inputs = [
+    { inputId: 'search-box', suggId: 'search-box-suggestions', isSearchBox: true },
+    { inputId: 'route-start', suggId: 'route-start-suggestions', isSearchBox: false },
+    { inputId: 'route-end', suggId: 'route-end-suggestions', isSearchBox: false }
+  ];
 
-    searchBox.oninput = (e) => {
-      const target = e.target;
-      const val = target.value.trim();
+  inputs.forEach(({ inputId, suggId, isSearchBox }) => {
+    const inputEl = $(inputId);
+    const suggEl = $(suggId);
+    if (!inputEl || !suggEl) return;
+
+    // Helper to render suggestions and wire item clicks
+    const renderSuggestions = (titles) => {
+      if (!titles || titles.length === 0) {
+        suggEl.innerHTML = "";
+        suggEl.style.display = "none";
+        return;
+      }
+      suggEl.innerHTML = titles.map(title => {
+        const idx = findTitleIndexInTitlesBin(title);
+        const hasCat = idx !== undefined && idx >= 0 && idx < N;
+        const tagCol = hasCat && CAT[cat[idx]] ? `rgb(${CAT[cat[idx]].join(',')})` : '#9d9894';
+        const categoryName = hasCat ? (CATNAME[cat[idx]] || 'Other') : '';
+        return `
+          <div class="suggestion-item" data-val="${title.replace(/"/g, '&quot;')}">
+            <span style="font-weight:600; color:${tagCol};">${title}</span>
+            ${categoryName ? `<span style="float:right; font-size:10px; opacity:0.6; border:1px solid ${tagCol}; padding:1px 5px; border-radius:8px; color:${tagCol};">${categoryName}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+      suggEl.style.display = "block";
+
+      // Attach click events on suggestion items (use onmousedown so it fires before input blur)
+      suggEl.querySelectorAll('.suggestion-item').forEach(item => {
+        item.onmousedown = (e) => {
+          e.preventDefault();
+          const val = item.getAttribute('data-val');
+          inputEl.value = val;
+          suggEl.style.display = "none";
+          if (isSearchBox) {
+            triggerSearch(val);
+          } else {
+            const event = new Event('change');
+            inputEl.dispatchEvent(event);
+          }
+        };
+      });
+    };
+
+    // Input typing logic
+    inputEl.oninput = (e) => {
+      const val = inputEl.value.trim();
       if (val.length < 3) {
-        datalist.innerHTML = "";
+        suggEl.innerHTML = "";
+        suggEl.style.display = "none";
         return;
       }
 
-      // Instant path: titles.bin + the sorted index built in buildTitleSearchIndex()
-      // are both in memory, so this is a binary search — no network round trip, no
-      // debounce needed since it's synchronous and effectively free.
-      const localResults = searchTitlesLocal(val, 10);
+      // 1. Check local binary-search autocomplete index
+      const localResults = searchTitlesLocal(val, 8);
       if (localResults !== null) {
-        datalist.innerHTML = localResults.map(idx => `<option value="${escapeAttr(titleOf(idx))}">`).join('');
-        const listId = target.getAttribute('list');
-        if (listId) { target.removeAttribute('list'); setTimeout(() => target.setAttribute('list', listId), 1); }
+        renderSuggestions(localResults.map(idx => titleOf(idx)));
         return;
       }
 
-      // Fallback: DB range query, only reachable before the local index finishes
-      // building (or if titles.bin failed to load).
-      if (!db) {
-        console.warn("Autocomplete skipped: DB connection is null");
-        return;
-      }
-      const loaderId = target.id === 'search-box' ? 'search-loader' : (target.id + '-loader');
+      // 2. Database range-query fallback
+      if (!db) return;
+      const loaderId = inputEl.id === 'search-box' ? 'search-loader' : (inputEl.id + '-loader');
       const loader = $(loaderId);
       if (loader) loader.style.display = 'block';
       if (searchTimeout) clearTimeout(searchTimeout);
@@ -1060,23 +1126,19 @@ function setupSearch(N, px, py) {
           const terms = val.split(/\s+/).filter(Boolean);
           let result = [];
           if (terms.length > 0) {
-            // Variant 1: Title Case (Capitalize first letter of every word)
             const titleCaseVal = terms.map(t => t.charAt(0).toUpperCase() + t.slice(1)).join(' ');
             const start1 = titleCaseVal;
             const end1 = start1.slice(0, -1) + String.fromCharCode(start1.charCodeAt(start1.length - 1) + 1);
 
-            // Variant 2: First-Word Capitalized (Capitalize first letter of first word, rest as typed)
             const firstCapVal = terms[0].charAt(0).toUpperCase() + terms[0].slice(1) + (terms.length > 1 ? ' ' + terms.slice(1).join(' ') : '');
             const start2 = firstCapVal;
             const end2 = start2.slice(0, -1) + String.fromCharCode(start2.charCodeAt(start2.length - 1) + 1);
 
-            console.log(`Running parallel autocomplete range queries: [${start1}] and [${start2}]`);
             const [res1, res2] = await Promise.all([
-              dbQuery(`SELECT id FROM nodes WHERE id >= ? AND id < ? LIMIT 10`, [start1, end1], PRIORITY_SEARCH),
-              dbQuery(`SELECT id FROM nodes WHERE id >= ? AND id < ? LIMIT 10`, [start2, end2], PRIORITY_SEARCH)
+              dbQuery(`SELECT id FROM nodes WHERE id >= ? AND id < ? LIMIT 8`, [start1, end1], PRIORITY_SEARCH),
+              dbQuery(`SELECT id FROM nodes WHERE id >= ? AND id < ? LIMIT 8`, [start2, end2], PRIORITY_SEARCH)
             ]);
 
-            // Merge and deduplicate results
             const seen = new Set();
             const merged = [];
             for (const r of [...(res1 || []), ...(res2 || [])]) {
@@ -1085,70 +1147,72 @@ function setupSearch(N, px, py) {
                 merged.push(r);
               }
             }
-            result = merged.slice(0, 10);
+            result = merged.slice(0, 8);
           }
-          console.log("Autocomplete query raw result rows:", result);
-          datalist.innerHTML = result.map(r => `<option value="${r.id}">`).join('');
-          console.log("Updated datalist options HTML:", datalist.innerHTML);
-          
-          // Force browser to refresh the autocomplete dropdown by toggling the list attribute
-          const listId = target.getAttribute('list');
-          if (listId) {
-            target.removeAttribute('list');
-            setTimeout(() => target.setAttribute('list', listId), 1);
-          }
+          renderSuggestions(result.map(r => r.id));
         } catch (e) {
-          console.error("Autocomplete query failed:", e);
+          console.error("Autocomplete failed:", e);
         } finally {
           if (loader) loader.style.display = 'none';
         }
       }, 250);
     };
 
-    searchBox.onchange = async () => {
-      const val = searchBox.value.trim();
-      if (!val) return;
-
-      // Instant path: the picked suggestion came from our own local index (or, if
-      // typed by hand, might still happen to be an exact title), so try resolving it
-      // there before touching the network at all.
-      const localIdx = findTitleIndexLocal(val);
-      if (localIdx !== undefined) {
-        window.selectNode(localIdx);
-        return;
-      }
-
-      try {
-        const idx = findTitleIndexInTitlesBin(val);
-        if (idx !== -1) {
-          window.selectNode(idx);
-        } else {
-          console.warn(`Node "${val}" is not present in the layout subset.`);
-        }
-      } catch (e) {
-        console.error("Search selection failed:", e);
-      }
+    // Close suggestions when input loses focus
+    inputEl.onblur = () => {
+      setTimeout(() => {
+        suggEl.style.display = "none";
+      }, 200);
     };
 
-    const searchRandomBtn = $('search-random-btn');
-    if (searchRandomBtn) {
-      searchRandomBtn.onclick = () => {
-        if (!titleOffsets) return; // titles.bin hasn't loaded yet
-        const idx = Math.floor(Math.random() * (titleOffsets.length - 1));
-        searchBox.value = titleOf(idx) || '';
+    // Re-show suggestions if input has enough text on focus
+    inputEl.onfocus = () => {
+      if (inputEl.value.trim().length >= 3) {
+        inputEl.oninput();
+      }
+    };
+  });
+
+  // Handle actual search action
+  async function triggerSearch(val) {
+    if (!val) return;
+    const localIdx = findTitleIndexLocal(val);
+    if (localIdx !== undefined) {
+      window.selectNode(localIdx);
+      return;
+    }
+    try {
+      const idx = findTitleIndexInTitlesBin(val);
+      if (idx !== -1) {
         window.selectNode(idx);
-      };
+      } else {
+        console.warn(`Node "${val}" is not present in the layout subset.`);
+      }
+    } catch (e) {
+      console.error("Search selection failed:", e);
     }
   }
 
-  // Setup route search autocomplete sharing the same datalist
-  const routeStart = $('route-start');
-  const routeEnd = $('route-end');
-  [routeStart, routeEnd].forEach(el => {
-    if (el) {
-      el.oninput = searchBox.oninput;
-    }
-  });
+  // Handle when search input change directly (e.g. Enter key)
+  const searchBox = $('search-box');
+  if (searchBox) {
+    searchBox.onchange = () => {
+      setTimeout(() => {
+        triggerSearch(searchBox.value.trim());
+      }, 150);
+    };
+  }
+
+  const searchRandomBtn = $('search-random-btn');
+  if (searchRandomBtn && searchBox) {
+    searchRandomBtn.onclick = () => {
+      if (!titleOffsets) return;
+      const idx = Math.floor(Math.random() * (titleOffsets.length - 1));
+      const title = titleOf(idx) || '';
+      searchBox.value = title;
+      window.selectNode(idx);
+    };
+  }
 }
 
 window.selectNodeById = async (nodeId) => {
@@ -1318,6 +1382,24 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
         // for search/route-list selection, where the target may be off-screen and
         // needs navigation to reach.
         window.selectNode(i, false, false);
+      } else {
+        // Clicked empty space: collapse active panels & dismiss sidebar on mobile
+        const isMobile = window.innerWidth <= 768;
+        if (isMobile) {
+          [['header-toggle','header-panel'],['legend-toggle','legend-panel'],['controls-toggle','controls-panel'],['stats-toggle','stats-panel']]
+            .forEach(([b,p]) => {
+              const bt=$(b), pn=$(p);
+              if (bt && pn) {
+                pn.classList.add('collapsed');
+                bt.classList.remove('active');
+              }
+            });
+          const sidebar = $('detail-sidebar');
+          if (sidebar && sidebar.classList.contains('active')) {
+            const sbc = $('sidebar-close');
+            if (sbc) sbc.click();
+          }
+        }
       }
     },
     onHover:({index,x,y})=>{
@@ -1398,6 +1480,19 @@ function run(N,px,py,rad,col,deg,cat,et,grid){
     const sidebar = $('detail-sidebar');
     if (!sidebar) return;
     sidebar.classList.add('active');
+
+    // On mobile, collapse all other active panels when opening details sidebar
+    const isMobile = window.innerWidth <= 768;
+    if (isMobile) {
+      [['header-toggle','header-panel'],['legend-toggle','legend-panel'],['controls-toggle','controls-panel'],['stats-toggle','stats-panel']]
+        .forEach(([b,p]) => {
+          const bt=$(b), pn=$(p);
+          if (bt && pn) {
+            pn.classList.add('collapsed');
+            bt.classList.remove('active');
+          }
+        });
+    }
 
     const backBtn = $('sidebar-back');
     if (backBtn) {

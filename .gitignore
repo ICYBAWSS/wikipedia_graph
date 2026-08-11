@@ -25,5 +25,6 @@ test_scrape/.DS_Store
 *.pyc
 key.txt*
 reference_repo/
+.claude/
 
 
