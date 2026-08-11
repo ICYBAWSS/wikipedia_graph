@@ -2345,9 +2345,11 @@ function cull(vs){
   if (M_populated > 0) {
     let accumulator = 0;
     const step = nodeBudget / M_populated;
+    const maxAccumulator = Math.max(step * 1.5, 5.0);
     for (let idx = 0; idx < M_populated && v < nodeBudget; idx++) {
       const c = popCells[idx];
       accumulator += step;
+      if (accumulator > maxAccumulator) accumulator = maxAccumulator;
       if (accumulator >= 1) {
         const alloc = Math.floor(accumulator);
         const s0 = start[c], e0 = start[c+1];
