@@ -1,3 +1,4 @@
+# https://icybawss.github.io/wikipedia_graph/
 # Wikipedia Graph Visualizer & Pathfinder
 
 An interactive, high-performance, serverless client-side visualization and route-finding engine for the entire English Wikipedia link graph. This application visualizes **~6.9 million articles** (nodes) and **~100 million links** (edges) as a cohesive "cosmic web" layout, allowing users to find paths between arbitrary pages instantly in the browser.
