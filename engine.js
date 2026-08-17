@@ -904,7 +904,7 @@ async function startVisualization() {
   }
 
   // Setup Autocomplete and Search
-  setupSearch(N, px, py);
+  setupSearch(N, px, py, cat);
 
   // Run the Deck.gl engine
   try {
@@ -1145,7 +1145,7 @@ async function initWordCatchGame() {
   window.__wordCatchStop = () => { running = false; };
 }
 
-function setupSearch(N, px, py) {
+function setupSearch(N, px, py, cat) {
   const inputs = [
     { inputId: 'search-box', suggId: 'search-box-suggestions', isSearchBox: true },
     { inputId: 'route-start', suggId: 'route-start-suggestions', isSearchBox: false },
