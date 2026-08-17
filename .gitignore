@@ -30,6 +30,8 @@ backups/
 
 *.pyc
 key.txt*
+word_catch_emb*.npy
+word_catch_emb*.json
 reference_repo/
 .claude/
 
